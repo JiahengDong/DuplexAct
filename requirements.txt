@@ -1,0 +1,11 @@
+numpy
+scipy
+soundfile
+librosa
+pandas
+python-dotenv
+openai
+google-genai
+python-socketio[asyncio_client]
+aiohttp
+websockets
