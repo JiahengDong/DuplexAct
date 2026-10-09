@@ -6,7 +6,7 @@ This repository contains:
 
 - **Inference** for Direct Replay and Simulator Replay
 - **Evaluation** (Immediate + Subsequent scoring, ASR, report writers)
-- **Candor processing** (Candor cannot be redistributed; you run this locally)
+- **Candor processing** (Candor cannot be redistributed; you could run this locally with our processing codes)
 
 Packaged evaluation audio for AMI / CORAAL / Loqui and the synthesized conditions is released separately on Hugging Face. Synthesis code is **not** included.
 
