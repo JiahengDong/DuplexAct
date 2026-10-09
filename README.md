@@ -2,7 +2,7 @@
 
 Benchmark for **interaction action taking** in end-to-end full-duplex spoken language models (E2E FD-SLMs).
 
-This repository is the public code release for the ICLR 2027 submission *DuplexAct: How Interactive Are Frontier Full-Duplex Spoken Language Models?* It contains:
+This repository contains:
 
 - **Inference** for Direct Replay and Simulator Replay
 - **Evaluation** (Immediate + Subsequent scoring, ASR, report writers)
@@ -37,8 +37,6 @@ Success is two 0/1 scores, not a single occurrence rate:
 - **Subsequent** — after that, did later behavior stay consistent with the action?
 
 Action-level tables are a **micro-average** over the scored trials of that action (the test distribution as built). Condition-level tables report each condition on its own. Subsequent is gated on Immediate = 1.
-
-The paper evaluates 14 models and finds uneven action-space performance, weak subsequent follow-through relative to Immediate, and limited adaptation across conversational scenarios.
 
 Scoring definitions: [`evaluation/APPENDIX.md`](evaluation/APPENDIX.md) and [`evaluation_rubric/`](evaluation_rubric/).
 
@@ -80,11 +78,25 @@ Open-source local servers (Moshi, MiniCPM-o, …) need checkpoints. Point `OPENS
 
 ### Data
 
-1. Download the Hugging Face evaluation set (AMI / CORAAL / Loqui + synthesized conditions) and place it at:
+1. Download the Hugging Face evaluation set (AMI / CORAAL / Loqui + synthesized conditions) and unpack it into the inference layout:
 
-   `evaluation/direct_replay/data/<action>/<condition>/<sample_id>/`
+   ```bash
+   python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
+     --out_dir evaluation/direct_replay/data
+   ```
 
-   Each sample has the audio the protocol needs (`input.wav`, or `lead_in.wav` + `cue.wav`, or Interrupt `user_speech.wav`) plus `metadata.json`. Each action has a `manifest.json`.
+   Or load a single action as a `datasets` object (audio columns are `{path, bytes}`):
+
+   ```python
+   from datasets import load_dataset
+   ds = load_dataset("LincolnD/DuplexAct", "wait", split="test")
+   ```
+
+   Unpacked layout: `evaluation/direct_replay/data/<action>/<condition>/<sample_id>/`
+   with the protocol audio (`input.wav`, or `lead_in.wav` + `cue.wav`, or Interrupt
+   `user_speech.wav` / branch wavs), `metadata.json`, and per-action `manifest.json`.
+
+   **Candor clips are not on the Hub.** The dump is 3,539 items.
 
 2. **Candor** is not on Hugging Face. Download Candor yourself and run [`scripts/Candor/`](scripts/Candor/) (below), then `prepare_*.py` to merge those clips into the same layout.
 
@@ -204,14 +216,4 @@ Those packagers also look for AMI / CORAAL / Loqui extracts and Hugging Face syn
 
 ## Citation
 
-```bibtex
-@inproceedings{duplexact2027,
-  title     = {DuplexAct: How Interactive Are Frontier Full-Duplex Spoken Language Models?},
-  author    = {Anonymous},
-  booktitle = {Submitted to ICLR},
-  year      = {2027},
-  note      = {Under review}
-}
-```
 
-Update the author list after the review period.
