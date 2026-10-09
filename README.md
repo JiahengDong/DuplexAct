@@ -9,9 +9,9 @@ This repository contains:
 
 - **Inference** for Direct Replay and Simulator Replay
 - **Evaluation** (Immediate + Subsequent scoring, ASR, report writers)
-- **Candor processing** (Candor cannot be redistributed; you could run this locally with our processing codes)
+- **Candor / Loqui processing** (those corpora cannot be redistributed; run the extractors locally after you download the official releases)
 
-Packaged evaluation audio for AMI / CORAAL / Loqui and the synthesized conditions is on [Hugging Face](https://huggingface.co/datasets/LincolnD/DuplexAct). Synthesis code is **not** included.
+Packaged evaluation audio for AMI / CORAAL and the synthesized conditions is on [Hugging Face](https://huggingface.co/datasets/LincolnD/DuplexAct). Synthesis code is **not** included.
 
 ---
 
@@ -58,9 +58,10 @@ evaluation/
   APPENDIX.md
 evaluation_rubric/            # per-action rubrics
 scripts/Candor/               # extract Candor clips you download yourself
+scripts/Loqui/                # extract Loqui clips you download yourself
 ```
 
-What is **not** here: `data_synthesize/`, AMI / CORAAL / Loqui extractors, model checkpoints, `output.wav` / score caches, API keys.
+What is **not** here: `data_synthesize/`, AMI / CORAAL extractors, model checkpoints, `output.wav` / score caches, API keys.
 
 ---
 
@@ -81,7 +82,7 @@ Open-source local servers (Moshi, MiniCPM-o, …) need checkpoints. Point `OPENS
 
 ### Data
 
-1. Download the Hugging Face evaluation set (AMI / CORAAL / Loqui + synthesized conditions) and unpack it into the inference layout:
+1. Download the Hugging Face evaluation set (AMI / CORAAL + synthesized conditions) and unpack it into the inference layout:
 
    ```bash
    python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
@@ -99,9 +100,9 @@ Open-source local servers (Moshi, MiniCPM-o, …) need checkpoints. Point `OPENS
    with the protocol audio (`input.wav`, or `lead_in.wav` + `cue.wav`, or Interrupt
    `user_speech.wav` / branch wavs), `metadata.json`, and per-action `manifest.json`.
 
-   **Candor clips are not on the Hub.** The dump is 3,539 items.
+   **Candor and Loqui clips are not on the Hub.** The dump is 3,408 items.
 
-2. **Candor** is not on Hugging Face. Download Candor yourself and run [`scripts/Candor/`](scripts/Candor/) (below), then `prepare_*.py` to merge those clips into the same layout.
+2. **Candor** and **Loqui** are not on Hugging Face. Download each corpus yourself and run [`scripts/Candor/`](scripts/Candor/) / [`scripts/Loqui/`](scripts/Loqui/) (below), then `prepare_*.py` to merge those clips into the same layout.
 
 ---
 
@@ -213,7 +214,35 @@ python evaluation/direct_replay/data/prepare_stop_samples.py
 # ...
 ```
 
-Those packagers also look for AMI / CORAAL / Loqui extracts and Hugging Face synthesized clips. If you only have Candor, they will take as many Candor items as exist (some conditions are short of 200 by construction).
+Those packagers also look for AMI / CORAAL / Loqui extracts and Hugging Face synthesized clips. If you only have Candor or Loqui, they will take as many of those items as exist (some conditions are short of 200 by construction).
+
+---
+
+## Loqui processing
+
+Loqui is not hosted: the Academic Commons record ([doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9)) does not attach a Creative Commons license, so we do not redistribute the audio. You need a local copy of `LoquiPackage` (`Transcriptions/*.final.trs` + `*.san.wav`).
+
+These are the only Loqui scripts in this repo:
+
+| Pipeline | Script | Used for |
+|---|---|---|
+| Pauses | `extract_pause_loqui.py` + `batch_pause_loqui.py` | Wait |
+| Floor + backchannel | `extract_floor_backchannel_loqui.py` + `batch_floor_backchannel_loqui.py` | Backchannel, Hold floor (real) |
+| Interruptions | `extract_interruptions_loqui.py` + `batch_interruptions_loqui.py` | Stop, Recover (real) |
+| Turn-taking | `extract_turn_taking_loqui.py` + `batch_turn_taking_loqui.py` | Take turn |
+
+Example:
+
+```bash
+export LOQUI_ROOT=/path/to/LoquiPackage
+export OPENAI_API_KEY=...   # GPT filter / recategorize
+
+python scripts/Loqui/batch_pause_loqui.py \
+  --loqui_root "$LOQUI_ROOT" \
+  --results_dir results/Loqui/pauses
+```
+
+`--loqui_root` may be `LoquiPackage`, its parent, or the `Transcriptions` folder. Defaults inside the scripts still point at an internal cluster; **always pass `--loqui_root` and `--results_dir`**. Then pack into the eval layout with the same `prepare_*.py` scripts as Candor.
 
 ---
 
@@ -221,17 +250,17 @@ Those packagers also look for AMI / CORAAL / Loqui extracts and Hugging Face syn
 
 This repository is **code only**. It does not host AMI, CORAAL, Loqui, or Candor audio.
 
-The evaluation clips on [Hugging Face](https://huggingface.co/datasets/LincolnD/DuplexAct) mix several sources. Each source keeps its own terms; the Hub dump is **not** a single permissive license.
+The evaluation clips on [Hugging Face](https://huggingface.co/datasets/LincolnD/DuplexAct) mix AMI, CORAAL, and synthesized conditions. Each source keeps its own terms; the Hub dump is **not** a single permissive license.
 
 | Source | What we ship | Official terms | What that means here |
 |---|---|---|---|
 | **AMI Meeting Corpus** | clipped audio derived from AMI | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ([AMI licence page](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml)) | Redistribution is allowed if you keep attribution, name CC BY 4.0, and note that the clips are modified (segmented) relative to the original corpus. |
 | **CORAAL** | clipped audio derived from CORAAL | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) ([User Guide](https://lingtools.uoregon.edu/coraal/userguide/CORAALUserGuide_current.pdf)) | Research/education only (non-commercial). Any redistribution of CORAAL-derived clips must stay **CC BY-NC-SA 4.0** and cite CORAAL. |
-| **Loqui** | clipped audio derived from the Loqui library-telephone corpus | Columbia Academic Commons deposit: [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). That record describes transcriptions/annotations and does **not** attach a Creative Commons license. | Copyright remains with the original authors. Academic Commons: use only as the copyright owner allows; if no license is stated, do not assume free redistribution. Confirm with the data owners before any commercial or further public reuse. |
 | **Synthesized** | clips we generated | original to this benchmark | Distributed with the Hub dump for research use of DuplexAct. |
+| **Loqui** | not hosted | Columbia Academic Commons deposit: [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). That record describes transcriptions/annotations and does **not** attach a Creative Commons license. | Copyright remains with the original authors. Obtain Loqui yourself and run `scripts/Loqui/`. |
 | **Candor** | not hosted | original Candor license | Audio cannot be redistributed. Obtain Candor yourself and run `scripts/Candor/`. |
 
-Because CORAAL is ShareAlike and NonCommercial, the **combined** Hub dataset cannot be treated as CC BY. Hugging Face is tagged `other` for that reason. Downstream use of a row must follow the `dataset` field on that row (`AMI` / `CORAAL` / `Loqui` / `synthesized`).
+Because CORAAL is ShareAlike and NonCommercial, the **combined** Hub dataset cannot be treated as CC BY. Hugging Face is tagged `other` for that reason. Downstream use of a row must follow the `dataset` field on that row (`AMI` / `CORAAL` / `synthesized`).
 
 Suggested source citations (in addition to DuplexAct, when a citation exists):
 
