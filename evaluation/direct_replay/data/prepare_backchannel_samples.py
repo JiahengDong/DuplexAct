@@ -110,7 +110,7 @@ DATASET_REFINED = {
     "AMI":    BASE / "results/AMI/Relaxed/backchannel_refined",
     "Loqui":  BASE / "results/Loqui/Relaxed/backchannel_refined",
 }
-DATASET_RELAXED = {
+DATASET_ALT = {
     "CORAAL": BASE / "results/CORAAL/Relaxed/backchannel_relaxed",
     "Candor": BASE / "results/Candor/Relaxed/backchannel_relaxed",
     "AMI":    BASE / "results/AMI/Relaxed/backchannel_relaxed",
@@ -134,11 +134,11 @@ UNCERTAINTY_TYPES   = {"uncertainty"}
 
 def _build_audio_index(dataset: str) -> dict[str, Path]:
     """
-    Index all *full*.wav files for a dataset (refined + relaxed, all types).
+    Index all *full*.wav files for a dataset (all types).
     Used only for CORAAL and Candor (which lack a direct path field).
     """
     index: dict[str, Path] = {}
-    for src_dir in [DATASET_REFINED[dataset], DATASET_RELAXED[dataset]]:
+    for src_dir in [DATASET_REFINED[dataset], DATASET_ALT[dataset]]:
         for t in ALL_TYPES:
             d = src_dir / t
             if not d.exists():
@@ -202,8 +202,7 @@ def _trim_bounds(dataset: str, entry: dict) -> Optional[tuple[float, float]]:
     t=0, or None if the resolved file needs no trimming.
 
     CORAAL/Loqui only: their extraction scripts
-    (scripts/{CORAAL,Loqui}/extract_floor_backchannel_*_relaxed.py) always
-    export "_full.wav" spanning [t0_start, after_end] -- t0 being the
+    always export "_full.wav" spanning [t0_start, after_end] -- t0 being the
     BACKCHANNELING speaker's own earlier, unrelated turn (the extraction
     script's own comment labels it "T0: B trigger") -- not [before_start,
     after_end] as this module originally (incorrectly) assumed when

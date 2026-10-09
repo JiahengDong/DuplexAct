@@ -181,13 +181,13 @@ bash evaluation/metrics/reports/make_reports.sh --all
 
 Candor is licensed such that we cannot host the audio. You need a local copy of the official release (per-conversation folders with audio + Backbiter transcripts).
 
-These are the only Candor scripts in this repo — Backbiter transcripts, relaxed criteria where that edition exists:
+These are the only Candor scripts in this repo. All four read Backbiter transcripts:
 
 | Pipeline | Script | Used for |
 |---|---|---|
 | Pauses | `extract_pause_candidates.py` + `batch_pause_backbiter.py` | Wait |
-| Floor + backchannel | `extract_floor_backchannel_relaxed.py` + `batch_floor_backchannel_backbiter_relaxed.py` | Backchannel, Hold floor (real) |
-| Interruptions | `extract_interruptions_relaxed.py` + `batch_interruptions_relaxed.py` | Stop, Recover (real) |
+| Floor + backchannel | `extract_floor_backchannel.py` + `batch_floor_backchannel_backbiter.py` | Backchannel, Hold floor (real) |
+| Interruptions | `extract_interruptions.py` + `batch_interruptions.py` | Stop, Recover (real) |
 | Turn-taking | `extract_turn_taking_backbiter.py` + `batch_turn_taking_backbiter.py` | Take turn (overlap) |
 
 Example:
@@ -196,9 +196,9 @@ Example:
 export CANDOR_ROOT=/path/to/Candor
 export OPENAI_API_KEY=...   # GPT filter / recategorize
 
-python scripts/Candor/batch_interruptions_relaxed.py \
+python scripts/Candor/batch_interruptions.py \
   --candor_root "$CANDOR_ROOT" \
-  --results_dir results/Candor/interruptions_relaxed
+  --results_dir results/Candor/interruptions
 ```
 
 Defaults inside the scripts still point at an internal cluster; **always pass `--candor_root` and `--results_dir`**. Then pack into the eval layout:

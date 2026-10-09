@@ -23,8 +23,8 @@ Key differences from the Cliffhanger version:
   Turn4  Speaker B  – recovery / response after interruption
 
 Usage:
-  python extract_interruptions_backbiter.py --conv_dir <path>
-  python extract_interruptions_backbiter.py --gpt_only --conv_dir <path>
+  python extract_interruptions.py --conv_dir <path>
+  python extract_interruptions.py --gpt_only --conv_dir <path>
 """
 
 import json
@@ -66,8 +66,7 @@ QUOTA_EXIT_CODE         = 2
 
 
 # ── Per-run filter configuration ───────────────────────────────────────────────
-# Every flag defaults to the original strict behaviour.
-# Pass --skip_XXX or --min_XXX on the command line to relax a criterion.
+# Every flag defaults to on. Pass --skip_XXX or --min_XXX to turn a criterion off.
 @dataclass
 class FilterConfig:
     # ── Pre-filter ─────────────────────────────────────────────────────────────
@@ -1248,7 +1247,7 @@ def main(conv_dir: Path, gpt_only: bool = False,
     # gpt_valid is already set inside gpt_classify() via recompute_validity()
     valid = [c for c in candidates if c.get('gpt_valid')]
     hard_v = [c for c in valid if c.get('interruption_style') == 'hard']
-    print(f"\n  Valid after GPT (relaxed): {len(valid)}/{len(candidates)}")
+    print(f"\n  Valid after GPT: {len(valid)}/{len(candidates)}")
     if hard_v:
         by_type: dict = {}
         for c in hard_v:
@@ -1289,7 +1288,7 @@ def main(conv_dir: Path, gpt_only: bool = False,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Extract interruption & recovery patterns (relaxed, configurable criteria).")
+        description="Extract interruption & recovery patterns.")
 
     # ── Core options ───────────────────────────────────────────────────────────
     parser.add_argument("--conv_dir",    type=Path, default=DEFAULT_CONV_DIR)
@@ -1348,7 +1347,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_t4_words",     action="store_true",
                         help="Do NOT enforce T4 minimum word count")
 
-    # ── GPT validity criteria (each --skip_gpt_X relaxes that validity field) ─
+    # ── GPT validity criteria ──────────────────────────────────────────────────
     parser.add_argument("--skip_gpt_t1_complete",       action="store_true",
                         help="Do NOT require GPT turn1_complete=true for is_valid")
     parser.add_argument("--skip_gpt_t1_self_contained", action="store_true",

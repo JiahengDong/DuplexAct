@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Batch processor for CANDOR floor-holding + backchannel extraction (Relaxed edition).
+Batch processor for CANDOR floor-holding + backchannel extraction.
 
-Uses extract_floor_backchannel_relaxed.py which supports per-criterion --skip_* flags.
+Uses extract_floor_backchannel.py which supports per-criterion --skip_* flags.
 
 Runs all conversations in parallel (per-conv GPT calls), then aggregates results
 and caps at TARGET_PER_LABEL valid candidates per floor_holding_label.
 
 Usage:
-  python batch_floor_backchannel_backbiter_relaxed.py                      # all parts
-  python batch_floor_backchannel_backbiter_relaxed.py --parts 1            # only part_001
-  python batch_floor_backchannel_backbiter_relaxed.py --workers 8          # more workers
-  python batch_floor_backchannel_backbiter_relaxed.py --force              # reprocess done
-  python batch_floor_backchannel_backbiter_relaxed.py --dry_run            # show what would run
-  python batch_floor_backchannel_backbiter_relaxed.py --target 5           # 5 per label
-  python batch_floor_backchannel_backbiter_relaxed.py --no_gpt             # timing filter only
+  python batch_floor_backchannel_backbiter.py                      # all parts
+  python batch_floor_backchannel_backbiter.py --parts 1            # only part_001
+  python batch_floor_backchannel_backbiter.py --workers 8          # more workers
+  python batch_floor_backchannel_backbiter.py --force              # reprocess done
+  python batch_floor_backchannel_backbiter.py --dry_run            # show what would run
+  python batch_floor_backchannel_backbiter.py --target 5           # 5 per label
+  python batch_floor_backchannel_backbiter.py --no_gpt             # timing filter only
 """
 
 import argparse
@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 CANDOR_ROOT         = Path(os.environ.get("CANDOR_ROOT", "/data/gpfs/projects/punim2960/jiahengd/dataset/Candor"))
-SCRIPT              = Path(__file__).resolve().parent / "extract_floor_backchannel_relaxed.py"
+SCRIPT              = Path(__file__).resolve().parent / "extract_floor_backchannel.py"
 PYTHON              = sys.executable
 DEFAULT_RESULTS_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/results/Candor/floor_backchannel_relaxed")
 DEFAULT_TARGET      = 500  # cap per floor_holding_label
@@ -40,7 +40,7 @@ DONE_MARKER_GPT     = "floor_backchannel_relaxed/filter2_gpt/all_with_gpt_decisi
 DONE_MARKER_NO_GPT  = "floor_backchannel_relaxed/filter1_timing/all.json"
 QUOTA_EXIT_CODE     = 2
 
-# Mirror thresholds from extract_floor_backchannel_relaxed.py — used in report labels.
+# Mirror thresholds from extract_floor_backchannel.py — used in report labels.
 MIN_T0_WORDS    = 4
 MIN_T1_WORDS    = 4
 MIN_AFTER_WORDS = 4
@@ -333,7 +333,7 @@ def write_report(results_dir: Path, all_convs: list[Path],
             f"{s['min']}{u}", f"{s['max']}{u}", s["n"])
 
     mode = "Timing-only (--no_gpt)" if no_gpt else f"Full (timing + GPT, task={task})"
-    h(1, "CANDOR Floor-Holding + Backchannel Report (Relaxed)")
+    h(1, "CANDOR Floor-Holding + Backchannel Report")
     lines.append(f"> Generated: {now}  |  Conversations: {n_convs_ok}  |  Mode: {mode}\n")
 
     sec = 1
@@ -480,7 +480,7 @@ def write_report(results_dir: Path, all_convs: list[Path],
 def main():
     global CANDOR_ROOT
     parser = argparse.ArgumentParser(
-        description="Batch process floor-holding + backchannel extraction (relaxed).")
+        description="Batch process floor-holding + backchannel extraction.")
     parser.add_argument("--workers",     type=int, default=4)
     parser.add_argument("--force",       action="store_true")
     parser.add_argument("--parts",       type=int, nargs="+")

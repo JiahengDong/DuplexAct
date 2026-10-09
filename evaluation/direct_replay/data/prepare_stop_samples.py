@@ -31,11 +31,10 @@ samples (pooling ALL interruption_type/style="hard" candidates, since
 recovery type is irrelevant to whether/how fast the model yields).
 urgent_stop_cue and correction_redirection have NO sourced data yet -- they
 would need new synthesized TTS clips (analogous to interrupt_user's
-hazard-cue design) or a relaxed real-data re-annotation pass.
+hazard-cue design).
 
-Dataset status (2026-09-01, after fixing the CORAAL missing-metadata bug --
-see scripts/CORAAL/extract_interruptions_coraal_relaxed.py's
-export_candidates() docstring -- and re-downloading AMI/CORAAL raw audio):
+Dataset status (2026-09-01, after fixing the CORAAL missing-metadata bug
+and re-downloading AMI/CORAAL raw audio):
     Candor  : READY.  969 hard candidates (any recovery type), audio ready.
     AMI     : READY.  337 hard candidates, audio (re-)exported via
               scripts/AMI/slurm_export_interruptions_ami_audio.sh.

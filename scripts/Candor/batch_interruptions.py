@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Batch processor for CANDOR interruption extraction — Relaxed-criteria edition.
+Batch processor for CANDOR interruption extraction.
 
 Every timing and GPT validity criterion can be toggled off individually.
 Pass the same --skip_* / --min_* flags here as you would to the extractor;
 they are forwarded to each per-conversation subprocess.
 
 Usage:
-  python batch_interruptions_relaxed.py --workers 8 --no_gpt \\
+  python batch_interruptions.py --workers 8 --no_gpt \\
       --skip_abab --skip_t1_pauses --skip_t1_sent_final --min_t3_overlap 0.1
 """
 
@@ -21,7 +21,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 CANDOR_ROOT         = Path(os.environ.get("CANDOR_ROOT", "/data/gpfs/projects/punim2960/jiahengd/dataset/Candor"))
-SCRIPT              = Path(__file__).resolve().parent / "extract_interruptions_relaxed.py"
+SCRIPT              = Path(__file__).resolve().parent / "extract_interruptions.py"
 PYTHON              = sys.executable
 DEFAULT_RESULTS_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/results/interruptions_relaxed")
 
@@ -219,7 +219,7 @@ def aggregate_results(results_dir: Path, all_convs: list[Path],
 def main():
     global CANDOR_ROOT
     parser = argparse.ArgumentParser(
-        description="Batch interruption extraction — relaxed, configurable criteria.")
+        description="Batch interruption extraction.")
 
     # ── Core options ───────────────────────────────────────────────────────────
     parser.add_argument("--workers",     type=int, default=4)
@@ -299,7 +299,7 @@ def main():
 
     # Derive a unique per-conversation subdirectory from the results_dir name so
     # that concurrent runs with different settings never overwrite each other's files.
-    rname = args.results_dir.name  # e.g. "interruptions_relaxed_t1_self_contained"
+    rname = args.results_dir.name
     conv_subdir = rname.replace("interruptions_", "interruption_candidates_", 1)
     if not conv_subdir.startswith("interruption_candidates_"):
         conv_subdir = f"interruption_candidates_{rname}"
@@ -322,7 +322,7 @@ def main():
     print(f"  max_t2_t1_overlap : {args.max_t2_t1_overlap}s")
     print(f"  max_t4_t3_overlap : {args.max_t4_t3_overlap}s")
     if extra_args:
-        print(f"  Relaxed criteria  : {' '.join(extra_args)}")
+        print(f"  Extra flags       : {' '.join(extra_args)}")
 
     if args.dry_run:
         for c in todo_convs:

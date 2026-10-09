@@ -55,8 +55,8 @@ convention):
                 <conv_id>_t<t1_turn_id>_backchannel.wav -- NOT cropped; spans
                     the full [t1_start, t1_end] window with silence outside
                     [bc_start, bc_end] (same padded-window pattern as the
-                    interruptions_relaxed pool used by stop/respond_and_
-                    recover -- must slice [bc_start-t1_start, bc_end-t1_start]
+                    interruption pool used by stop/respond_and_recover --
+                    must slice [bc_start-t1_start, bc_end-t1_start]
                     before use).
 
 Across all four corpora, `t0.wav` is the lead-in (context prompting the

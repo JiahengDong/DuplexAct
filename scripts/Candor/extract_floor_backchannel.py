@@ -30,8 +30,8 @@ continuous words collapse into one backchannel, and we require exactly ONE
 backchannel (reject if more than one distinct backchannel remains).
 
 Usage:
-  python extract_floor_backchannel_backbiter.py --conv_dir <path>
-  python extract_floor_backchannel_backbiter.py --gpt_only --conv_dir <path>
+  python extract_floor_backchannel.py --conv_dir <path>
+  python extract_floor_backchannel.py --gpt_only --conv_dir <path>
 """
 
 import json
