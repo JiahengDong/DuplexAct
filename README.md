@@ -2,13 +2,16 @@
 
 Benchmark for **interaction action taking** in end-to-end full-duplex spoken language models (E2E FD-SLMs).
 
+- **Code:** [github.com/JiahengDong/DuplexAct](https://github.com/JiahengDong/DuplexAct)
+- **Data:** [huggingface.co/datasets/LincolnD/DuplexAct](https://huggingface.co/datasets/LincolnD/DuplexAct)
+
 This repository contains:
 
 - **Inference** for Direct Replay and Simulator Replay
 - **Evaluation** (Immediate + Subsequent scoring, ASR, report writers)
 - **Candor processing** (Candor cannot be redistributed; you could run this locally with our processing codes)
 
-Packaged evaluation audio for AMI / CORAAL / Loqui and the synthesized conditions is released separately on Hugging Face. Synthesis code is **not** included.
+Packaged evaluation audio for AMI / CORAAL / Loqui and the synthesized conditions is on [Hugging Face](https://huggingface.co/datasets/LincolnD/DuplexAct). Synthesis code is **not** included.
 
 ---
 

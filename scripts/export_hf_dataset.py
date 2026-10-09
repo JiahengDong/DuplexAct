@@ -192,13 +192,31 @@ configs:
 
 # DuplexAct
 
-Evaluation instances for [DuplexAct](https://github.com/JiahengDong/DuplexAct):
-interaction-action taking in end-to-end full-duplex spoken language models.
+Evaluation audio for interaction-action taking in end-to-end full-duplex spoken language models.
 
-**Candor-derived clips are not included.** Download Candor yourself and run
-`scripts/Candor/` in the GitHub repo if you need those 1,152 items.
+- **Data:** [huggingface.co/datasets/LincolnD/DuplexAct](https://huggingface.co/datasets/LincolnD/DuplexAct)
+- **Code:** [github.com/JiahengDong/DuplexAct](https://github.com/JiahengDong/DuplexAct)
 
-This Hub dump is AMI, CORAAL, Loqui, and the synthesized conditions (3,539 items).
+This dump is **3,539** items from AMI, CORAAL, Loqui, and the synthesized conditions.
+**Candor clips are not included** (license). To rebuild those 1,152 items, download Candor
+yourself and run `scripts/Candor/` in the GitHub repo.
+
+Each config is one Level-2 action; the split is `test`.
+
+| Config | n | Protocol | Audio columns |
+|---|---:|---|---|
+| `wait` | 370 | Direct replay | `input` |
+| `backchannel` | 300 | Direct replay | `input` |
+| `ignore` | 400 | Direct replay | `input` |
+| `turn_taking` | 499 | Direct replay | `input` |
+| `stop` | 42 | Simulator cue | `lead_in`, `cue` |
+| `hold_floor` | 729 | Simulator cue | `lead_in`, `cue` |
+| `respond_and_recover` | 799 | Simulator cue | `lead_in`, `cue` |
+| `interrupt_user` | 400 | Simulator barge-in | `user_speech`, `branch_acknowledged`, `branch_ignored` |
+
+Unused audio columns for a protocol are empty. `condition` is the Level-3 id.
+`dataset` is `AMI` / `CORAAL` / `Loqui` / `synthesized`.
+`metadata` and `manifest` are the original JSON files as strings.
 
 ## Load
 
@@ -207,27 +225,17 @@ from datasets import load_dataset
 
 ds = load_dataset("LincolnD/DuplexAct", "wait", split="test")
 # Audio columns are {path, bytes} (self-contained parquet).
-# ds[0]["metadata"] is the original metadata.json as a JSON string.
-# ds[0]["manifest"] is the original manifest.json entry.
 ```
 
-To restore the on-disk layout used by inference:
+Restore the on-disk layout used by inference (from the GitHub repo):
 
 ```bash
 python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
   --out_dir evaluation/direct_replay/data
 ```
 
-Configs match Level-2 actions. Audio columns that do not apply to that
-protocol are empty:
+## Citation
 
-| Config | Protocol | Audio columns |
-|---|---|---|
-| `wait`, `backchannel`, `ignore`, `turn_taking` | Direct replay | `input` |
-| `stop`, `hold_floor`, `respond_and_recover` | Simulator cue | `lead_in`, `cue` |
-| `interrupt_user` | Simulator barge-in | `user_speech`, `branch_acknowledged`, `branch_ignored` |
-
-`condition` is the Level-3 id. `dataset` is `AMI` / `CORAAL` / `Loqui` / `synthesized`.
 """
 
 
