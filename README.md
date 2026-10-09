@@ -2,11 +2,11 @@
 
 Benchmark for **interaction action taking** in end-to-end full-duplex spoken language models (E2E FD-SLMs).
 
-This repository is the public code release for the ICLR 2027 submission *DuplexAct: How Interactive Are Frontier Full-Duplex Spoken Language Models?* It contains:
+This repository is the public code release for *DuplexAct: How Interactive Are Frontier Full-Duplex Spoken Language Models?* It contains:
 
 - **Inference** for Direct Replay and Simulator Replay
 - **Evaluation** (Immediate + Subsequent scoring, ASR, report writers)
-- **Candor processing** (Candor cannot be redistributed; you run this locally)
+- **Candor processing** (Candor cannot be redistributed; you could run this locally with our processing codes)
 
 Packaged evaluation audio for AMI / CORAAL / Loqui and the synthesized conditions is released separately on Hugging Face. Synthesis code is **not** included.
 
