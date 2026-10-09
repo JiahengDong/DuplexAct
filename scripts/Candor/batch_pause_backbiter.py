@@ -20,6 +20,7 @@ QUOTA_EXIT_CODE = 2
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -27,8 +28,8 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-CANDOR_ROOT         = Path("/data/gpfs/projects/punim2960/jiahengd/dataset/Candor")
-SCRIPT              = Path("/data/gpfs/projects/punim2960/jiahengd/scripts/Candor/extract_pause_candidates.py")
+CANDOR_ROOT         = Path(os.environ.get("CANDOR_ROOT", "/data/gpfs/projects/punim2960/jiahengd/dataset/Candor"))
+SCRIPT              = Path(__file__).resolve().parent / "extract_pause_candidates.py"
 PYTHON              = sys.executable
 DEFAULT_RESULTS_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/results/pauses")
 
@@ -251,6 +252,7 @@ def aggregate_results(results_dir: Path, all_convs: list[Path],
 
 
 def main():
+    global CANDOR_ROOT
     parser = argparse.ArgumentParser(description="Batch process all CANDOR conversations.")
     parser.add_argument("--workers",      type=int, default=4,  help="Parallel workers (default 4)")
     parser.add_argument("--force",        action="store_true",  help="Reprocess already-done conversations")
@@ -260,10 +262,12 @@ def main():
     parser.add_argument("--skip_gpt",     action="store_true",  help="Run timing filter only; skip GPT and audio export")
     parser.add_argument("--results_dir",  type=Path, default=DEFAULT_RESULTS_DIR,
                         help=f"Global results directory (default: {DEFAULT_RESULTS_DIR})")
+    parser.add_argument("--candor_root",  type=Path, default=CANDOR_ROOT)
     parser.add_argument("--cap_per_type", type=int, default=GLOBAL_CAP_DEFAULT,
                         help=f"Max valid samples per sub-action type (default: {GLOBAL_CAP_DEFAULT}). "
                              "Once reached, GPT judging is skipped for that type in subsequent conversations.")
     args = parser.parse_args()
+    CANDOR_ROOT = args.candor_root.expanduser().resolve()
 
     if args.skip_gpt and args.results_dir == DEFAULT_RESULTS_DIR:
         args.results_dir = Path(str(DEFAULT_RESULTS_DIR) + "_no_gpt")

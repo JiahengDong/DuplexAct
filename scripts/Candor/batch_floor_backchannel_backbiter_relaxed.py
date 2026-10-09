@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,8 +29,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-CANDOR_ROOT         = Path("/data/gpfs/projects/punim2960/jiahengd/dataset/Candor")
-SCRIPT              = Path("/data/gpfs/projects/punim2960/jiahengd/scripts/Candor/extract_floor_backchannel_relaxed.py")
+CANDOR_ROOT         = Path(os.environ.get("CANDOR_ROOT", "/data/gpfs/projects/punim2960/jiahengd/dataset/Candor"))
+SCRIPT              = Path(__file__).resolve().parent / "extract_floor_backchannel_relaxed.py"
 PYTHON              = sys.executable
 DEFAULT_RESULTS_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/results/Candor/floor_backchannel_relaxed")
 DEFAULT_TARGET      = 500  # cap per floor_holding_label
@@ -477,6 +478,7 @@ def write_report(results_dir: Path, all_convs: list[Path],
 
 
 def main():
+    global CANDOR_ROOT
     parser = argparse.ArgumentParser(
         description="Batch process floor-holding + backchannel extraction (relaxed).")
     parser.add_argument("--workers",     type=int, default=4)
@@ -489,6 +491,7 @@ def main():
                              "floor_holding_label otherwise)")
     parser.add_argument("--results_dir", type=Path, default=None,
                         help="Results directory (default: auto-suffixed by --task).")
+    parser.add_argument("--candor_root", type=Path, default=CANDOR_ROOT)
     parser.add_argument("--task", choices=["backchannel", "floor_holding", "both"],
                         default="backchannel",
                         help="GPT evaluation task passed through to extract script.")
@@ -518,6 +521,7 @@ def main():
     parser.add_argument("--skip_gpt_t1_complete",       action="store_true")
     parser.add_argument("--skip_gpt_t1_self_contained", action="store_true")
     args = parser.parse_args()
+    CANDOR_ROOT = args.candor_root.expanduser().resolve()
 
     # Auto-suffix results dir based on task
     if args.results_dir is None:

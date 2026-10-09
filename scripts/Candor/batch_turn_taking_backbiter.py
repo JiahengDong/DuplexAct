@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,8 +25,8 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-CANDOR_ROOT         = Path("/data/gpfs/projects/punim2960/jiahengd/dataset/Candor")
-SCRIPT              = Path("/data/gpfs/projects/punim2960/jiahengd/scripts/Candor/extract_turn_taking_backbiter.py")
+CANDOR_ROOT         = Path(os.environ.get("CANDOR_ROOT", "/data/gpfs/projects/punim2960/jiahengd/dataset/Candor"))
+SCRIPT              = Path(__file__).resolve().parent / "extract_turn_taking_backbiter.py"
 PYTHON              = sys.executable
 DEFAULT_RESULTS_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/results/turn_taking_backbiter")
 DEFAULT_TARGET      = 500
@@ -348,6 +349,7 @@ def _print_filter_report(results: list[dict],
 
 
 def main():
+    global CANDOR_ROOT
     parser = argparse.ArgumentParser(
         description="Batch process turn-taking extraction (Backbiter edition).")
     parser.add_argument("--workers",     type=int, default=4)
@@ -359,7 +361,9 @@ def main():
     parser.add_argument("--target",      type=int, default=DEFAULT_TARGET,
                         help="Max valid candidates per timing category")
     parser.add_argument("--results_dir", type=Path, default=DEFAULT_RESULTS_DIR)
+    parser.add_argument("--candor_root", type=Path, default=CANDOR_ROOT)
     args = parser.parse_args()
+    CANDOR_ROOT = args.candor_root.expanduser().resolve()
 
     all_convs  = find_conversations(args.parts)
     todo_convs = all_convs if args.force else [

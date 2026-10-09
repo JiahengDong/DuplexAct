@@ -181,7 +181,7 @@ bash evaluation/metrics/reports/make_reports.sh --all
 
 Candor is licensed such that we cannot host the audio. You need a local copy of the official release (per-conversation folders with audio + Backbiter transcripts).
 
-The **relaxed** extractors are what produced the evaluation set:
+These are the only Candor scripts in this repo — Backbiter transcripts, relaxed criteria where that edition exists:
 
 | Pipeline | Script | Used for |
 |---|---|---|
