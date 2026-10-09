@@ -234,6 +234,27 @@ python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
   --out_dir evaluation/direct_replay/data
 ```
 
+## License
+
+This dump mixes sources. Each row's `dataset` field (`AMI` / `CORAAL` / `Loqui` / `synthesized`)
+selects the terms that apply. The YAML license is `other` because the mix is not one CC license.
+
+| Source | n (this dump) | Official terms | Notes |
+|---|---:|---|---|
+| AMI Meeting Corpus | 517 | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ([AMI licence](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml)) | Attribution required. Clips are modified (segmented) relative to the original recordings. |
+| CORAAL | 731 | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) ([User Guide](https://lingtools.uoregon.edu/coraal/userguide/CORAALUserGuide_current.pdf)) | Non-commercial research/education only. CORAAL-derived clips must stay ShareAlike (CC BY-NC-SA). Cite CORAAL. |
+| Loqui | 131 | Columbia Academic Commons [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). No Creative Commons license is attached on that record. | Copyright remains with the original authors. Do not assume free redistribution; confirm with the data owners for further public or commercial reuse. |
+| Synthesized | 2160 | original to this benchmark | For research use of DuplexAct. |
+| Candor | 0 | original Candor license | Not included. |
+
+**CORAAL ShareAlike** means you cannot relicense CORAAL rows as CC BY. **NonCommercial** means CORAAL rows (and any mix that includes them) are not for commercial use unless you obtain a separate CORAAL commercial license.
+
+Suggested source citations:
+
+- AMI: [groups.inf.ed.ac.uk/ami/corpus](https://groups.inf.ed.ac.uk/ami/corpus/)
+- CORAAL: Kendall, Tyler and Charlie Farrington. 2023. *The Corpus of Regional African American Language*. Version 2023.06. Eugene, OR: The Online Resources for African American Language Project. http://oraal.uoregon.edu/coraal — https://doi.org/10.7264/1ad5-6t35
+- Loqui: Passonneau, Rebecca; Sachar, Evaneet. 2014. *Loqui Human-Human Dialogue Corpus (Transcriptions and Annotations)*. Columbia University Academic Commons. https://doi.org/10.7916/D82R3PW9
+
 ## Citation
 
 """

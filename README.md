@@ -217,6 +217,30 @@ Those packagers also look for AMI / CORAAL / Loqui extracts and Hugging Face syn
 
 ---
 
+## License and source data
+
+This repository is **code only**. It does not host AMI, CORAAL, Loqui, or Candor audio.
+
+The evaluation clips on [Hugging Face](https://huggingface.co/datasets/LincolnD/DuplexAct) mix several sources. Each source keeps its own terms; the Hub dump is **not** a single permissive license.
+
+| Source | What we ship | Official terms | What that means here |
+|---|---|---|---|
+| **AMI Meeting Corpus** | clipped audio derived from AMI | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ([AMI licence page](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml)) | Redistribution is allowed if you keep attribution, name CC BY 4.0, and note that the clips are modified (segmented) relative to the original corpus. |
+| **CORAAL** | clipped audio derived from CORAAL | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) ([User Guide](https://lingtools.uoregon.edu/coraal/userguide/CORAALUserGuide_current.pdf)) | Research/education only (non-commercial). Any redistribution of CORAAL-derived clips must stay **CC BY-NC-SA 4.0** and cite CORAAL. |
+| **Loqui** | clipped audio derived from the Loqui library-telephone corpus | Columbia Academic Commons deposit: [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). That record describes transcriptions/annotations and does **not** attach a Creative Commons license. | Copyright remains with the original authors. Academic Commons: use only as the copyright owner allows; if no license is stated, do not assume free redistribution. Confirm with the data owners before any commercial or further public reuse. |
+| **Synthesized** | clips we generated | original to this benchmark | Distributed with the Hub dump for research use of DuplexAct. |
+| **Candor** | not hosted | original Candor license | Audio cannot be redistributed. Obtain Candor yourself and run `scripts/Candor/`. |
+
+Because CORAAL is ShareAlike and NonCommercial, the **combined** Hub dataset cannot be treated as CC BY. Hugging Face is tagged `other` for that reason. Downstream use of a row must follow the `dataset` field on that row (`AMI` / `CORAAL` / `Loqui` / `synthesized`).
+
+Suggested source citations (in addition to DuplexAct, when a citation exists):
+
+- AMI: see [groups.inf.ed.ac.uk/ami/corpus](https://groups.inf.ed.ac.uk/ami/corpus/)
+- CORAAL: Kendall, Tyler and Charlie Farrington. 2023. *The Corpus of Regional African American Language*. Version 2023.06. Eugene, OR: The Online Resources for African American Language Project. http://oraal.uoregon.edu/coraal — https://doi.org/10.7264/1ad5-6t35
+- Loqui: Passonneau, Rebecca; Sachar, Evaneet. 2014. *Loqui Human-Human Dialogue Corpus (Transcriptions and Annotations)*. Columbia University Academic Commons. https://doi.org/10.7916/D82R3PW9
+
+---
+
 ## Citation
 
 
