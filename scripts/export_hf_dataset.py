@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build and push the DuplexAct evaluation set to Hugging Face.
 
-Candor and Loqui clips are excluded (license). AMI / CORAAL / synthesized stay.
+Candor clips are excluded (license). AMI / CORAAL / Loqui / synthesized stay.
 Each action is a dataset config with split ``test`` and Audio columns.
 
     python scripts/export_hf_dataset.py
@@ -75,7 +75,7 @@ def collect(action: str) -> list[dict]:
     rows = []
     skipped_src = missing = 0
     for e in entries:
-        if (e.get("dataset") or "").lower() in ("candor", "loqui"):
+        if (e.get("dataset") or "").lower() == "candor":
             skipped_src += 1
             continue
         d = resolve_dir(action, e)
@@ -112,7 +112,7 @@ def collect(action: str) -> list[dict]:
             row["branch_acknowledged"] = audio_or_none(d / "branch_acknowledged.wav")
             row["branch_ignored"] = audio_or_none(d / "branch_ignored.wav")
         rows.append(row)
-    print(f"[{action}] keep={len(rows)}  candor_loqui_excluded={skipped_src}  missing_dir={missing}")
+    print(f"[{action}] keep={len(rows)}  candor_excluded={skipped_src}  missing_dir={missing}")
     return rows
 
 
@@ -197,25 +197,25 @@ Evaluation audio for interaction-action taking in end-to-end full-duplex spoken 
 - **Data:** [huggingface.co/datasets/LincolnD/DuplexAct](https://huggingface.co/datasets/LincolnD/DuplexAct)
 - **Code:** [github.com/JiahengDong/DuplexAct](https://github.com/JiahengDong/DuplexAct)
 
-This dump is **3,408** items from AMI, CORAAL, and the synthesized conditions.
-**Candor and Loqui clips are not included** (license). To rebuild those items, download
-each corpus yourself and run `scripts/Candor/` / `scripts/Loqui/` in the GitHub repo.
+This dump is **3,539** items from AMI, CORAAL, Loqui, and the synthesized conditions.
+**Candor clips are not included** (license). Download Candor yourself and run
+`scripts/Candor/` in the GitHub repo if you need those 1,152 items.
 
 Each config is one Level-2 action; the split is `test`.
 
 | Config | n | Protocol | Audio columns |
 |---|---:|---|---|
-| `wait` | 307 | Direct replay | `input` |
-| `backchannel` | 240 | Direct replay | `input` |
+| `wait` | 370 | Direct replay | `input` |
+| `backchannel` | 300 | Direct replay | `input` |
 | `ignore` | 400 | Direct replay | `input` |
 | `turn_taking` | 499 | Direct replay | `input` |
 | `stop` | 42 | Simulator cue | `lead_in`, `cue` |
-| `hold_floor` | 721 | Simulator cue | `lead_in`, `cue` |
+| `hold_floor` | 729 | Simulator cue | `lead_in`, `cue` |
 | `respond_and_recover` | 799 | Simulator cue | `lead_in`, `cue` |
 | `interrupt_user` | 400 | Simulator barge-in | `user_speech`, `branch_acknowledged`, `branch_ignored` |
 
 Unused audio columns for a protocol are empty. `condition` is the Level-3 id.
-`dataset` is `AMI` / `CORAAL` / `synthesized`.
+`dataset` is `AMI` / `CORAAL` / `Loqui` / `synthesized`.
 `metadata` and `manifest` are the original JSON files as strings.
 
 ## Load
@@ -236,16 +236,17 @@ python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
 
 ## License
 
-This dump mixes sources. Each row's `dataset` field (`AMI` / `CORAAL` / `synthesized`)
-selects the terms that apply. The YAML license is `other` because AMI is CC BY 4.0 and
-CORAAL is CC BY-NC-SA 4.0 — that mix is not one Creative Commons license.
+This dump mixes sources. Each row's `dataset` field (`AMI` / `CORAAL` / `Loqui` / `synthesized`)
+selects the terms that apply. The YAML license is `other` because AMI is CC BY 4.0,
+CORAAL is CC BY-NC-SA 4.0, and Loqui is redistributed with permission — that mix is
+not one Creative Commons license.
 
 | Source | n (this dump) | Official terms | Notes |
 |---|---:|---|---|
 | AMI Meeting Corpus | 517 | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ([AMI licence](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml)) | Attribution required. Clips are modified (segmented) relative to the original recordings. |
 | CORAAL | 731 | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) ([User Guide](https://lingtools.uoregon.edu/coraal/userguide/CORAALUserGuide_current.pdf)) | Non-commercial research/education only. CORAAL-derived clips must stay ShareAlike (CC BY-NC-SA). Cite CORAAL. |
 | Synthesized | 2160 | original to this benchmark | For research use of DuplexAct. |
-| Loqui | 0 | Columbia Academic Commons [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). No Creative Commons license on that record. | Not included. Obtain Loqui yourself and run `scripts/Loqui/` in the GitHub repo. |
+| Loqui | 131 | Columbia Academic Commons [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). Redistributed with permission of the Loqui authors. | Selected evaluation clips only. Attribute Passonneau & Sachar (2014). Copyright remains with the original authors. |
 | Candor | 0 | original Candor license | Not included. Obtain Candor yourself and run `scripts/Candor/`. |
 
 **CORAAL ShareAlike** means you cannot relicense CORAAL rows as CC BY. **NonCommercial** means CORAAL rows (and any mix that includes them) are not for commercial use unless you obtain a separate CORAAL commercial license.
@@ -315,7 +316,7 @@ def main() -> None:
         (args.local_dir / "README.md").write_text(CARD)
 
     if args.dry_run or args.local_only:
-        print(f"total AMI/CORAAL/synth samples: {all_n} (expect 3408)")
+        print(f"total AMI/CORAAL/Loqui/synth samples: {all_n} (expect 3539)")
         return
 
     assert api is not None
@@ -333,7 +334,7 @@ def main() -> None:
             repo_id=args.repo_id,
             repo_type="dataset",
         )
-    print(f"total AMI/CORAAL/synth samples: {all_n} (expect 3408)")
+    print(f"total AMI/CORAAL/Loqui/synth samples: {all_n} (expect 3539)")
 
 
 if __name__ == "__main__":
