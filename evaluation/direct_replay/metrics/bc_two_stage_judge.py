@@ -19,7 +19,7 @@ Three rates come out, all over the same dataset N so they stack:
   screened   -- automatic AND stage 1 confirmed it is a backchannel
   function   -- screened AND stage 2 gave the condition's function
 
-    python evaluation/scoring/bc_two_stage_judge.py
+    python evaluation/direct_replay/metrics/bc_two_stage_judge.py
 """
 from __future__ import annotations
 

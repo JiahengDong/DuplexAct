@@ -9,3 +9,7 @@ google-genai
 python-socketio[asyncio_client]
 aiohttp
 websockets
+sphn
+datasets
+pyarrow
+huggingface_hub

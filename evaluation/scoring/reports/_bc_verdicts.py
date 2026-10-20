@@ -12,7 +12,7 @@ reorders the table rather than shifting it.
 
 Immediate therefore now means both halves of the action: the model produced a
 backchannel at all, and it carried the function the condition asked for.
-`evaluation/scoring/bc_two_stage_judge.py` writes those two verdicts; this
+`evaluation/direct_replay/metrics/bc_two_stage_judge.py` writes those two verdicts; this
 module joins them onto the cache so Immediate, Subsequent and Timing all read
 one population. `bc_rule_immediate` keeps the old rule-only value for the
 decomposition table.
@@ -93,7 +93,7 @@ def assert_complete() -> None:
         sample = sorted(_MISSING)[:5]
         raise SystemExit(
             f"{len(_MISSING)} backchannel records have no two-stage verdict "
-            f"(e.g. {sample}). Re-run evaluation/scoring/bc_two_stage_judge.py."
+            f"(e.g. {sample}). Re-run evaluation/direct_replay/metrics/bc_two_stage_judge.py."
         )
     if _UNJUDGED:
         sample = sorted(_UNJUDGED)[:5]

@@ -152,13 +152,13 @@ The model first speaks from `lead_in.wav`. A cue (or, for Interrupt, ongoing use
 ```bash
 cd evaluation/simulator_replay/inference
 
-python run_action_batch.py --action stop --model gpt-realtime-2.1
+python run_stop_batch.py --model gpt-realtime-2.1
 python run_action_batch.py --action hold_floor --model gpt-realtime-2.1
 python run_action_batch.py --action respond_and_recover --model gpt-realtime-2.1
 python run_interrupt_batch.py --model gpt-realtime-2.1
 ```
 
-Simulator results go to `evaluation/simulator_replay/results/<action>/<condition>/<model>/<sample_id>/`.
+Simulator results go to `evaluation/simulator_replay/results/<action>/<model>/<sample_id>/` (no condition level; the condition is in `inference_info.json`).
 
 ### Post-inference fixes
 
@@ -182,6 +182,8 @@ Most models are scored from Whisper `asr.json` on `output.wav`. Bayling and Raon
 # 1. ASR (skip for bayling-duplex / raon-speechchat)
 python evaluation/scoring/asr_openai.py \
   --results_root evaluation/direct_replay/results/inference_results
+python evaluation/scoring/asr_openai.py \
+  --results_root evaluation/simulator_replay/results
 
 # 2. Immediate + Subsequent
 python evaluation/scoring/run_metrics.py --model gpt-realtime-2.1 --action wait
@@ -201,7 +203,7 @@ bash evaluation/scoring/reports/make_reports.sh
 
 ## Candor
 
-Candor is licensed such that we cannot host the audio, and we do not release our extraction pipeline. Instead, [`scripts/Candor/candor_instances.jsonl`](scripts/Candor/candor_instances.jsonl) fixes every Candor instance: conversation, stereo channel, exact sample range, silenced spans, trailing silence, its `metadata.json`, and its manifest position. [`rebuild_candor.py`](scripts/Candor/rebuild_candor.py) cuts those ranges out of your local copy, so the rebuilt instances are the ones we evaluated, checked by per-file SHA-256.
+Candor is licensed such that we cannot host the audio, and we do not release our extraction pipeline. Instead, [`scripts/Candor/candor_instances.jsonl`](scripts/Candor/candor_instances.jsonl) fixes every Candor instance: conversation, stereo channel, exact sample range, silenced spans, trailing silence, and its `metadata.json`. [`rebuild_candor.py`](scripts/Candor/rebuild_candor.py) cuts those ranges out of your local copy, so the rebuilt instances are the ones we evaluated, checked by per-file SHA-256.
 
 **Getting Candor.** Apply for access on the [BetterUp data request site](https://betterup-data-requests.herokuapp.com/). Once approved you receive download links (live for one week). Candor is also on [TalkBank](https://talkbank.org/ca/access/CANDOR.html): first get approval from the BetterUp site, then register at TalkBank (email address and password), then email macw@cmu.edu to request TalkBank CANDOR access. Cite Reece et al. (2023), *Science Advances* 9(13), eadf3197.
 
@@ -215,7 +217,7 @@ python scripts/Candor/rebuild_candor.py --candor_root /path/to/Candor --out_dir 
 |---|---:|---:|---:|---:|---:|---:|
 | Candor instances | 230 | 106 | 155 | 158 | 162 | 424 |
 
-Run it after `unpack_hf_dataset.py`; it merges into the same `manifest.json` files. Details: [`scripts/Candor/README.md`](scripts/Candor/README.md).
+Run it after `unpack_hf_dataset.py`; it then regenerates each `manifest.json` from all `metadata.json` files. Details: [`scripts/Candor/README.md`](scripts/Candor/README.md).
 
 ---
 
