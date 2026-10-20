@@ -60,10 +60,9 @@ evaluation/
   scoring/                    # ASR, Immediate + Subsequent runner, report tables
   APPENDIX.md
 scripts/Candor/               # rebuild the Candor instances from your own Candor copy
-scripts/Loqui/                # extractors used to build the Loqui eval clips (already on the Hub)
 ```
 
-What is **not** here: `data_synthesize/`, AMI / CORAAL extractors, model checkpoints, `output.wav` / score caches, API keys.
+What is **not** here: `data_synthesize/`, AMI / CORAAL / Loqui extractors, model checkpoints, `output.wav` / score caches, API keys.
 
 ---
 
