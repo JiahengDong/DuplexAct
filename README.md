@@ -9,7 +9,7 @@ This repository contains:
 
 - **Inference** for Direct Replay and Simulator Replay
 - **Evaluation** (Immediate + Subsequent scoring, ASR, report writers)
-- **Candor processing** (Candor audio cannot be redistributed; run the extractors locally after you download the official release)
+- **Candor rebuild** (Candor audio cannot be redistributed; a fixed recipe rebuilds the exact Candor instances from your own copy)
 
 Packaged evaluation audio for AMI / CORAAL / Loqui and the synthesized conditions is on [Hugging Face](https://huggingface.co/datasets/LincolnD/DuplexAct). Synthesis code is **not** included.
 
@@ -59,7 +59,7 @@ evaluation/
     metrics/                  # Stop, Hold floor, Recover, Interrupt
   scoring/                    # ASR, Immediate + Subsequent runner, report tables
   APPENDIX.md
-scripts/Candor/               # extract Candor clips you download yourself
+scripts/Candor/               # rebuild the Candor instances from your own Candor copy
 scripts/Loqui/                # extractors used to build the Loqui eval clips (already on the Hub)
 ```
 
@@ -100,11 +100,16 @@ Open-source local servers (Moshi, MiniCPM-o, …) need checkpoints. Point `OPENS
 
    Unpacked layout: `evaluation/data/<action>/<condition>/<sample_id>/`
    with the protocol audio (`input.wav`, or `lead_in.wav` + `cue.wav`, or Interrupt
-   `user_speech.wav` / branch wavs), `metadata.json`, and per-action `manifest.json`.
+   `user_speech.wav` / branch wavs) and `metadata.json`. Each `<action>/manifest.json` is generated from those `metadata.json` files ([`scripts/build_manifests.py`](scripts/build_manifests.py)); it only lists samples for Direct Replay inference.
 
-   **Candor clips are not on the Hub.** The dump is 3,539 items.
+   **Candor clips are not on the Hub.** The dump is 3,456 items.
 
-2. **Candor** is not on Hugging Face. Download the official corpus and run [`scripts/Candor/`](scripts/Candor/) (below), then `prepare_*.py` to merge those clips into the same layout.
+2. **Candor** (1,235 items) is not on Hugging Face. Get the official corpus (see [Candor](#candor) below) and rebuild those instances into the same folders:
+
+   ```bash
+   python scripts/Candor/rebuild_candor.py --candor_root /path/to/Candor \
+     --out_dir evaluation/data
+   ```
 
 ---
 
@@ -195,40 +200,23 @@ bash evaluation/scoring/reports/make_reports.sh
 
 ---
 
-## Candor processing
+## Candor
 
-Candor is licensed such that we cannot host the audio. You need a local copy of the official release (per-conversation folders with audio + Backbiter transcripts).
+Candor is licensed such that we cannot host the audio, and we do not release our extraction pipeline. Instead, [`scripts/Candor/candor_instances.jsonl`](scripts/Candor/candor_instances.jsonl) fixes every Candor instance: conversation, stereo channel, exact sample range, silenced spans, trailing silence, its `metadata.json`, and its manifest position. [`rebuild_candor.py`](scripts/Candor/rebuild_candor.py) cuts those ranges out of your local copy, so the rebuilt instances are the ones we evaluated, checked by per-file SHA-256.
 
-These are the only Candor scripts in this repo. All four read Backbiter transcripts:
+**Getting Candor.** Apply for access on the [BetterUp data request site](https://betterup-data-requests.herokuapp.com/). Once approved you receive download links (live for one week). Candor is also on [TalkBank](https://talkbank.org/ca/access/CANDOR.html): first get approval from the BetterUp site, then register at TalkBank (email address and password), then email macw@cmu.edu to request TalkBank CANDOR access. Cite Reece et al. (2023), *Science Advances* 9(13), eadf3197.
 
-| Pipeline | Script | Used for |
-|---|---|---|
-| Pauses | `extract_pause_candidates.py` + `batch_pause_backbiter.py` | Wait |
-| Floor + backchannel | `extract_floor_backchannel.py` + `batch_floor_backchannel_backbiter.py` | Backchannel, Hold floor (real) |
-| Interruptions | `extract_interruptions.py` + `batch_interruptions.py` | Stop, Recover (real) |
-| Turn-taking | `extract_turn_taking_backbiter.py` + `batch_turn_taking_backbiter.py` | Take turn (overlap) |
-
-Example:
+`rebuild_candor.py` reads the BetterUp release layout (`<conversation_id>/processed/<conversation_id>.mp3` and `processed/channel_map.json`) and was verified on it. The TalkBank copy is reorganised into 16 segments, so it may need re-arranging into that layout first.
 
 ```bash
-export CANDOR_ROOT=/path/to/Candor
-export OPENAI_API_KEY=...   # GPT filter / recategorize
-
-python scripts/Candor/batch_interruptions.py \
-  --candor_root "$CANDOR_ROOT" \
-  --results_dir results/Candor/interruptions
+python scripts/Candor/rebuild_candor.py --candor_root /path/to/Candor --out_dir evaluation/data
 ```
 
-Defaults inside the scripts still point at an internal cluster; **always pass `--candor_root` and `--results_dir`**. Then pack into the eval layout:
+| Action | Wait | Backchannel | Take turn | Stop | Hold floor | Recover |
+|---|---:|---:|---:|---:|---:|---:|
+| Candor instances | 230 | 106 | 155 | 158 | 162 | 424 |
 
-```bash
-python evaluation/data/prepare_wait_samples.py
-python evaluation/data/prepare_backchannel_samples.py
-python evaluation/data/prepare_stop_samples.py
-# ...
-```
-
-Those packagers also look for AMI / CORAAL / Loqui extracts and Hugging Face synthesized clips. If you only have Candor, they will take as many of those items as exist (some conditions are short of 200 by construction).
+Run it after `unpack_hf_dataset.py`; it merges into the same `manifest.json` files. Details: [`scripts/Candor/README.md`](scripts/Candor/README.md).
 
 ---
 
@@ -243,8 +231,8 @@ The evaluation clips on [Hugging Face](https://huggingface.co/datasets/LincolnD/
 | **AMI Meeting Corpus** | clipped audio derived from AMI | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ([AMI licence page](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml)) | Redistribution is allowed if you keep attribution, name CC BY 4.0, and note that the clips are modified (segmented) relative to the original corpus. |
 | **CORAAL** | clipped audio derived from CORAAL | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) ([User Guide](https://lingtools.uoregon.edu/coraal/userguide/CORAALUserGuide_current.pdf)) | Research/education only (non-commercial). Any redistribution of CORAAL-derived clips must stay **CC BY-NC-SA 4.0** and cite CORAAL. |
 | **Synthesized** | clips we generated | original to this benchmark | Distributed with the Hub dump for research use of DuplexAct. |
-| **Loqui** | clipped audio derived from Loqui (131 items) | Columbia Academic Commons deposit: [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). Redistributed with permission of the Loqui authors. | Attribute Passonneau & Sachar (2014). Copyright remains with the original authors. Selected evaluation clips only, not the full conversations. |
-| **Candor** | not hosted | original Candor license | Audio cannot be redistributed. Obtain Candor yourself and run `scripts/Candor/`. |
+| **Loqui** | clipped audio derived from Loqui (126 items) | Columbia Academic Commons deposit: [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). Redistributed with permission of the Loqui authors. | Attribute Passonneau & Sachar (2014). Copyright remains with the original authors. Selected evaluation clips only, not the full conversations. |
+| **Candor** | not hosted; sample ranges only | original Candor license | Audio cannot be redistributed. Obtain Candor yourself ([BetterUp](https://betterup-data-requests.herokuapp.com/) or [TalkBank](https://talkbank.org/ca/access/CANDOR.html)) and run `scripts/Candor/rebuild_candor.py`. |
 
 Because CORAAL is ShareAlike and NonCommercial, and Loqui is permission-based rather than Creative Commons, the **combined** Hub dataset cannot be treated as CC BY. Hugging Face is tagged `other` for that reason. Downstream use of a row must follow the `dataset` field on that row (`AMI` / `CORAAL` / `Loqui` / `synthesized`).
 

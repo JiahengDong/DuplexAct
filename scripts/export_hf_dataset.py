@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build and push the DuplexAct evaluation set to Hugging Face.
 
-Candor clips are excluded (license). AMI / CORAAL / Loqui / synthesized stay.
-Each action is a dataset config with split ``test`` and Audio columns.
+Candor clips are excluded (license); rebuild them with scripts/Candor/rebuild_candor.py.
+AMI / CORAAL / Loqui / synthesized stay. Each action is a dataset config with split ``test`` and Audio columns.
 
     python scripts/export_hf_dataset.py
     python scripts/export_hf_dataset.py --dry_run
@@ -17,10 +17,12 @@ from pathlib import Path
 from datasets import Audio, Dataset, Features, Value
 from huggingface_hub import HfApi
 
+from build_manifests import l3_condition, source_dataset
+
 REPO_ID = "LincolnD/DuplexAct"
 
 ROOT = Path(os.environ.get("DUPLEXACT_DATA_ROOT")
-            or "/data/gpfs/projects/punim2960/jiahengd/evaluation/data")
+            or Path(__file__).resolve().parents[1] / "evaluation" / "data")
 
 DR = {"wait", "backchannel", "ignore", "turn_taking"}
 SIM_CUE = {"stop", "hold_floor", "respond_and_recover"}
@@ -33,26 +35,6 @@ TURN_DIR = {
     "delayed_take_turn": "take_turn_with_delay",
     "slight_overlap_take_turn": "take_turn_with_overlap",
 }
-
-
-def resolve_dir(action: str, entry: dict) -> Path | None:
-    sid = entry["sample_id"]
-    cond = entry["l3_condition"]
-    candidates = [
-        ROOT / action / cond / sid,
-        ROOT / action / TURN_DIR.get(cond, cond) / sid,
-    ]
-    sd = entry.get("sample_dir")
-    if sd:
-        p = Path(sd)
-        candidates.append(p if p.is_absolute() else ROOT / p)
-        # older layout: evaluation/data/<action>/...
-        if not p.is_absolute():
-            candidates.append(ROOT.parent.parent / "data" / p)
-    for c in candidates:
-        if c.is_dir():
-            return c
-    return None
 
 
 def protocol(action: str) -> str:
@@ -71,29 +53,26 @@ def audio_or_none(path: Path) -> dict | None:
 
 
 def collect(action: str) -> list[dict]:
-    entries = json.loads((ROOT / action / "manifest.json").read_text())
+    """Every sample folder of an action, described by its own metadata.json."""
     rows = []
-    skipped_src = missing = 0
-    for e in entries:
-        if (e.get("dataset") or "").lower() == "candor":
+    skipped_src = 0
+    for mp in sorted((ROOT / action).glob("*/*/metadata.json")):
+        d = mp.parent
+        meta = json.loads(mp.read_text())
+        dataset = source_dataset(meta)
+        if dataset == "Candor":
             skipped_src += 1
             continue
-        d = resolve_dir(action, e)
-        if d is None:
-            missing += 1
-            continue
-        meta = {}
-        mp = d / "metadata.json"
-        if mp.exists():
-            meta = json.loads(mp.read_text())
+        cond = l3_condition(meta, d.parent.name)
+        if TURN_DIR.get(cond, cond) != d.parent.name:
+            raise SystemExit(f"condition {cond!r} does not match folder {d.parent.name!r}: {d}")
         row = {
-            "sample_id": e["sample_id"],
+            "sample_id": d.name,
             "action": action,
-            "condition": e["l3_condition"],
-            "dataset": e.get("dataset") or meta.get("dataset") or "",
+            "condition": cond,
+            "dataset": dataset,
             "protocol": protocol(action),
-            "source_id": str(e.get("source_id") or meta.get("source_id") or ""),
-            "manifest": json.dumps(e, ensure_ascii=False),
+            "source_id": str(meta.get("source_id") or ""),
             "metadata": json.dumps(meta, ensure_ascii=False),
             "input": None,
             "lead_in": None,
@@ -112,7 +91,7 @@ def collect(action: str) -> list[dict]:
             row["branch_acknowledged"] = audio_or_none(d / "branch_acknowledged.wav")
             row["branch_ignored"] = audio_or_none(d / "branch_ignored.wav")
         rows.append(row)
-    print(f"[{action}] keep={len(rows)}  candor_excluded={skipped_src}  missing_dir={missing}")
+    print(f"[{action}] keep={len(rows)}  candor_excluded={skipped_src}")
     return rows
 
 
@@ -130,7 +109,6 @@ META = {
     "dataset": Value("string"),
     "protocol": Value("string"),
     "source_id": Value("string"),
-    "manifest": Value("string"),
     "metadata": Value("string"),
 }
 AUDIO_COLS = [
@@ -197,26 +175,26 @@ Evaluation audio for interaction-action taking in end-to-end full-duplex spoken 
 - **Data:** [huggingface.co/datasets/LincolnD/DuplexAct](https://huggingface.co/datasets/LincolnD/DuplexAct)
 - **Code:** [github.com/JiahengDong/DuplexAct](https://github.com/JiahengDong/DuplexAct)
 
-This dump is **3,539** items from AMI, CORAAL, Loqui, and the synthesized conditions.
-**Candor clips are not included** (license). Download Candor yourself and run
-`scripts/Candor/` in the GitHub repo if you need those 1,152 items.
+This dump is **3,456** items from AMI, CORAAL, Loqui, and the synthesized conditions.
+**Candor clips are not included** (license). The remaining 1,235 items are rebuilt from your own
+copy of Candor with `scripts/Candor/rebuild_candor.py` in the GitHub repo.
 
 Each config is one Level-2 action; the split is `test`.
 
 | Config | n | Protocol | Audio columns |
 |---|---:|---|---|
 | `wait` | 370 | Direct replay | `input` |
-| `backchannel` | 300 | Direct replay | `input` |
+| `backchannel` | 294 | Direct replay | `input` |
 | `ignore` | 400 | Direct replay | `input` |
-| `turn_taking` | 499 | Direct replay | `input` |
+| `turn_taking` | 445 | Direct replay | `input` |
 | `stop` | 42 | Simulator cue | `lead_in`, `cue` |
 | `hold_floor` | 729 | Simulator cue | `lead_in`, `cue` |
-| `respond_and_recover` | 799 | Simulator cue | `lead_in`, `cue` |
+| `respond_and_recover` | 776 | Simulator cue | `lead_in`, `cue` |
 | `interrupt_user` | 400 | Simulator barge-in | `user_speech`, `branch_acknowledged`, `branch_ignored` |
 
 Unused audio columns for a protocol are empty. `condition` is the Level-3 id.
 `dataset` is `AMI` / `CORAAL` / `Loqui` / `synthesized`.
-`metadata` and `manifest` are the original JSON files as strings.
+`metadata` is the sample's `metadata.json` as a string.
 
 ## Load
 
@@ -243,11 +221,11 @@ not one Creative Commons license.
 
 | Source | n (this dump) | Official terms | Notes |
 |---|---:|---|---|
-| AMI Meeting Corpus | 517 | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ([AMI licence](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml)) | Attribution required. Clips are modified (segmented) relative to the original recordings. |
-| CORAAL | 731 | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) ([User Guide](https://lingtools.uoregon.edu/coraal/userguide/CORAALUserGuide_current.pdf)) | Non-commercial research/education only. CORAAL-derived clips must stay ShareAlike (CC BY-NC-SA). Cite CORAAL. |
+| AMI Meeting Corpus | 512 | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ([AMI licence](https://groups.inf.ed.ac.uk/ami/corpus/license.shtml)) | Attribution required. Clips are modified (segmented) relative to the original recordings. |
+| CORAAL | 658 | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) ([User Guide](https://lingtools.uoregon.edu/coraal/userguide/CORAALUserGuide_current.pdf)) | Non-commercial research/education only. CORAAL-derived clips must stay ShareAlike (CC BY-NC-SA). Cite CORAAL. |
 | Synthesized | 2160 | original to this benchmark | For research use of DuplexAct. |
-| Loqui | 131 | Columbia Academic Commons [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). Redistributed with permission of the Loqui authors. | Selected evaluation clips only. Attribute Passonneau & Sachar (2014). Copyright remains with the original authors. |
-| Candor | 0 | original Candor license | Not included. Obtain Candor yourself and run `scripts/Candor/`. |
+| Loqui | 126 | Columbia Academic Commons [doi:10.7916/D82R3PW9](https://doi.org/10.7916/D82R3PW9). Redistributed with permission of the Loqui authors. | Selected evaluation clips only. Attribute Passonneau & Sachar (2014). Copyright remains with the original authors. |
+| Candor | 0 | original Candor license | Not included. Obtain Candor from [BetterUp](https://betterup-data-requests.herokuapp.com/) or [TalkBank](https://talkbank.org/ca/access/CANDOR.html) and run `scripts/Candor/rebuild_candor.py` (1,235 items). |
 
 **CORAAL ShareAlike** means you cannot relicense CORAAL rows as CC BY. **NonCommercial** means CORAAL rows (and any mix that includes them) are not for commercial use unless you obtain a separate CORAAL commercial license.
 
@@ -316,7 +294,7 @@ def main() -> None:
         (args.local_dir / "README.md").write_text(CARD)
 
     if args.dry_run or args.local_only:
-        print(f"total AMI/CORAAL/Loqui/synth samples: {all_n} (expect 3539)")
+        print(f"total AMI/CORAAL/Loqui/synth samples: {all_n} (expect 3456)")
         return
 
     assert api is not None
@@ -326,6 +304,7 @@ def main() -> None:
             repo_id=args.repo_id,
             folder_path=str(args.local_dir),
             repo_type="dataset",
+            delete_patterns=["*.parquet"],
         )
     else:
         api.upload_file(
@@ -334,7 +313,7 @@ def main() -> None:
             repo_id=args.repo_id,
             repo_type="dataset",
         )
-    print(f"total AMI/CORAAL/Loqui/synth samples: {all_n} (expect 3539)")
+    print(f"total AMI/CORAAL/Loqui/synth samples: {all_n} (expect 3456)")
 
 
 if __name__ == "__main__":

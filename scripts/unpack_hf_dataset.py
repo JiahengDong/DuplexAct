@@ -5,6 +5,9 @@
       --out_dir evaluation/data
     python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
       --out_dir evaluation/data
+
+Each <action>/manifest.json is regenerated from the unpacked metadata.json files
+(see build_manifests.py).
 """
 from __future__ import annotations
 
@@ -14,6 +17,8 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from build_manifests import write_manifests
 
 ACTIONS = [
     "wait", "backchannel", "ignore", "turn_taking",
@@ -43,7 +48,6 @@ def _struct_to_dict(val):
 
 def unpack_table(table, action: str, out_dir: Path) -> int:
     rows = table.to_pylist()
-    manifest = []
     n = 0
     for row in rows:
         sid = row["sample_id"]
@@ -61,17 +65,8 @@ def unpack_table(table, action: str, out_dir: Path) -> int:
         (dest / "metadata.json").write_text(
             json.dumps(json.loads(meta_raw), indent=2, ensure_ascii=False)
         )
-        entry = json.loads(row["manifest"]) if row.get("manifest") else {
-            "sample_id": sid,
-            "l3_condition": cond,
-            "dataset": row.get("dataset") or "",
-        }
-        entry["sample_dir"] = f"{action}/{disk}/{sid}"
-        manifest.append(entry)
         n += 1
-    man_path = out_dir / action / "manifest.json"
-    man_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
-    print(f"[{action}] unpacked {n} -> {man_path}")
+    print(f"[{action}] unpacked {n}")
     return n
 
 
@@ -113,6 +108,8 @@ def main() -> None:
                 table = pa.concat_tables([table, t])
             total += unpack_table(table, action, args.out_dir)
     print(f"total unpacked: {total}")
+    for action, n in write_manifests(args.out_dir).items():
+        print(f"  manifest {action}: {n}")
 
 
 if __name__ == "__main__":
