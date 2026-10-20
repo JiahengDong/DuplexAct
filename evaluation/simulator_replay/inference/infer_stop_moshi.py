@@ -71,9 +71,8 @@ MOSHI_POLL_INTERVAL_S = poll_interval_for_native_chunk(FRAME_SEC)  # 1.0s (unifi
 
 MOSHI_SILENCE_GRACE_S = 0.8    # same calibration as infer_moshi.py
 
-# Matches direct_replay's own PADDING_TIME_S=15.0 convention (see
-# prepare_turn_samples.py / prepare_wait_samples.py / prepare_backchannel_
-# samples.py -- "silence appended... for the model to respond into"), so the
+# Matches direct_replay's own PADDING_TIME_S=15.0 convention (15 s of
+# silence appended to every input.wav for the model to respond into), so the
 # model gets the SAME amount of room to produce its post-interruption
 # "recovery" turn (analogous to reference_recovery_text / T4) here as every
 # other L2 action gets after its own trigger point. Previously 6.0s, which

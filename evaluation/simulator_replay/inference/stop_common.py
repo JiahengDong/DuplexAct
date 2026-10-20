@@ -408,9 +408,7 @@ async def run_stop_sample_cli(
         "model":        model_slug,
         # Full reference conversation (T1..T4) is already in reference_context
         # verbatim (transcript_user=T1, reference_original_response_text=T2,
-        # reference_interruption_text=T3, reference_recovery_text=T4) --
-        # see evaluation/data/prepare_stop_samples.py +
-        # backfill_stop_recovery_text.py.
+        # reference_interruption_text=T3, reference_recovery_text=T4).
         "instance":     {**reference_context, **client.trigger_result},
         "inference":    result,
     }

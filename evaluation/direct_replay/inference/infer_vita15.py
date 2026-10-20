@@ -93,7 +93,7 @@ OUTPUT_SR = 24_000   # TTS codec output rate (tts_worker()'s `seg.shape[-1]/2400
 SEND_CHUNK_SAMPLES = int(0.2 * INPUT_SR)   # 200ms chunks -- matches FD-Bench's official client-audio.py cadence
 SEND_CHUNK_SEC = SEND_CHUNK_SAMPLES / INPUT_SR
 
-# prepare_*.py appends this much trailing silence to every Direct Replay wav.
+# Every Direct Replay input.wav ends with this much trailing silence.
 # Other clients stream that pad as the observation window. VITA's official
 # server treats incoming PCM as still-recording (Silero VAD) and
 # `recording-stopped` as interrupt+reset, so we strip the pad from the user

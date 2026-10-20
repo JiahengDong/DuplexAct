@@ -49,7 +49,7 @@ Scoring definitions: [`evaluation/APPENDIX.md`](evaluation/APPENDIX.md).
 
 ```
 evaluation/
-  data/                       # prepare_*.py; unpacked test set lives here
+  data/                       # unpacked test set (created by the data steps below)
   common/                     # streaming clients shared by both protocols
   direct_replay/
     inference/                # stream input.wav to a model (14 models)

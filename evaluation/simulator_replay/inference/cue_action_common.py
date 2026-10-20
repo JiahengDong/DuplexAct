@@ -87,7 +87,7 @@ REPO_ROOT = _duplexact_root()
 DIRECT_REPLAY_DATA = REPO_ROOT / "evaluation" / "data"
 
 # ── Action registry ──────────────────────────────────────────────────────
-# `data_subdir`: matches each action's own prepare_<action>_samples.py output
+# `data_subdir`: matches each action's unpacked data
 # layout (evaluation/data/<action>/<l3_condition_dir>/<sample_id>/). Every
 # sample dir under here has lead_in.wav + cue.wav + metadata.json, confirmed
 # identical to stop's own layout (see MODEL_COMPATIBILITY.md's production-run
@@ -102,9 +102,7 @@ ACTION_DATA_ROOTS: dict[str, Path] = {
 # py's _build_user_message() already reads via ref.get(...)) to the ACTUAL
 # key present in a given action's metadata.json, only where it differs from
 # stop's own naming. stop and respond_and_recover need no entry here (their
-# metadata.json was produced with the same field names already -- confirmed
-# by direct inspection of prepare_stop_samples.py's and
-# prepare_respond_recover_samples.py's own output). hold_floor's data used
+# metadata.json uses the same field names already). hold_floor's data used
 # different field names (reference_before_text / cue_text instead of
 # reference_original_response_text / reference_interruption_text, and has
 # no interruption_type field at all -- confirmed by direct inspection of a

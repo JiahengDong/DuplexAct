@@ -13,7 +13,7 @@ writes the standardized result set:
   results/inference_results/<action>/<l3_condition>/<model_slug>/_run_manifest.json
 
 Sample discovery is manifest-driven: reads data/<action>/manifest.json (written
-by the prepare_*.py scripts), NOT the manifest's `sample_dir` field directly
+by scripts/build_manifests.py), NOT the manifest's `sample_dir` field directly
 (which may be stale after directory moves) -- the sample directory is always
 recomputed as data_root/<action>/<l3_condition>/<sample_id>.
 
@@ -98,7 +98,7 @@ WARMUP_TIMEOUT_S = 900.0
 DEFAULT_TIMEOUT_OVERHEAD_S = SAMPLE_TIMEOUT_OVERHEAD_S
 
 # Metadata `input_duration` vs. the actual input.wav duration should always
-# match exactly (both are produced by the same prepare_*.py script) -- a
+# match exactly (both are produced together for each sample) -- a
 # mismatch beyond this means something is stale/corrupt (F-17) and streaming
 # it anyway would silently shift every downstream timestamp. Tolerance is
 # frame-level, not "large enough to never trip" (code review R-07: the
@@ -474,7 +474,7 @@ async def run_one_sample(
             # F-17/R-07: the sender streams the actual resampled WAV, while
             # the recorder target/padding use metadata's input_duration -- a
             # mismatch changes when input ends relative to the output clock.
-            # Both files are produced by the same prepare_*.py script, so any
+            # Both files are produced together for each sample, so any
             # real mismatch indicates stale/corrupt data, not a rounding
             # difference; reject outright rather than silently misalign timing.
             try:

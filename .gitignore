@@ -11,9 +11,7 @@ venv/
 evaluation/direct_replay/results/
 evaluation/simulator_replay/results/
 evaluation/scoring/cache/
-evaluation/data/*/
-!evaluation/data/prepare_*.py
-!evaluation/data/__init__.py
+evaluation/data/
 *.wav
 *.flac
 *.mp3
