@@ -20,7 +20,7 @@ from huggingface_hub import HfApi
 REPO_ID = "LincolnD/DuplexAct"
 
 ROOT = Path(os.environ.get("DUPLEXACT_DATA_ROOT")
-            or "/data/gpfs/projects/punim2960/jiahengd/evaluation/direct_replay/data")
+            or "/data/gpfs/projects/punim2960/jiahengd/evaluation/data")
 
 DR = {"wait", "backchannel", "ignore", "turn_taking"}
 SIM_CUE = {"stop", "hold_floor", "respond_and_recover"}
@@ -231,7 +231,7 @@ Restore the on-disk layout used by inference (from the GitHub repo):
 
 ```bash
 python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
-  --out_dir evaluation/direct_replay/data
+  --out_dir evaluation/data
 ```
 
 ## License

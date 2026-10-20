@@ -75,6 +75,8 @@ from typing import Optional
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from realtime_common import RealtimeClientBase, SynchronizedRecorder, EventLogger
 from local_common import opensource_root_for
 

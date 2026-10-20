@@ -97,6 +97,8 @@ import numpy as np
 from dotenv import load_dotenv
 from google import genai
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from realtime_common import (
     RealtimeClientBase, SynchronizedRecorder, EventLogger, sleep_until_deadline,
 )

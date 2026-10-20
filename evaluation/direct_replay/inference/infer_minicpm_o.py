@@ -62,6 +62,9 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
+from local_common import opensource_root_for
 from realtime_common import RealtimeClientBase, SynchronizedRecorder, EventLogger
 
 MINICPM_SLUG = "minicpm-o-4.5"
@@ -73,8 +76,7 @@ OUTPUT_SR = 24_000   # matches generate_duplex_video's output_sample_rate=24000
 CHUNK_SEC = 1.0                        # matches the model's documented 1s chunking
 MAX_NEW_SPEAK_TOKENS_PER_CHUNK = 20     # from the reference duplex example
 
-REPO_ROOT = Path("/data/gpfs/projects/punim2960/jiahengd")
-REF_AUDIO_PATH = REPO_ROOT / "opensource_models" / MINICPM_SLUG / "repo" / "assets" / "HT_ref_audio.wav"
+REF_AUDIO_PATH = opensource_root_for(MINICPM_SLUG) / "repo" / "assets" / "HT_ref_audio.wav"
 
 DEFAULT_PREFIX_PROMPT = "Streaming Omni Conversation."
 

@@ -111,6 +111,8 @@ try:
 except ImportError as e:
     raise ImportError("websockets not installed. Run: pip install websockets") from e
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from local_common import LocalServerManager, env_for_model, opensource_root_for
 from realtime_common import RealtimeClientBase, SynchronizedRecorder, EventLogger
 
@@ -132,7 +134,7 @@ FRAME_SEC      = FRAME_SAMPLES / API_SR
 FLM_AUDIO_SILENCE_GRACE_S = 0.8
 
 REPO_DIR = opensource_root_for(FLM_AUDIO_SLUG) / "repo"
-LOG_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/evaluation/direct_replay/logs")
+LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 
 
 def _pcm_f32_to_i16_bytes(pcm_f32: np.ndarray) -> bytes:
@@ -159,7 +161,7 @@ class FLMAudioClient(RealtimeClientBase):
             env=env_for_model(FLM_AUDIO_SLUG),
             host=FLM_AUDIO_HOST, port=FLM_AUDIO_PORT,
             # Per-job log file (job ID suffix) -- with per-node port isolation
-            # (FLM_AUDIO_PORT, see slurm_infer_opensource.sh) two same-model
+            # (FLM_AUDIO_PORT) two same-model
             # jobs can legitimately run concurrently on one node; a shared
             # log path would otherwise interleave their output.
             log_path=LOG_DIR / f"flm_audio_server.{os.environ.get('SLURM_JOB_ID', 'local')}.log",

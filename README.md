@@ -41,7 +41,7 @@ Success is two 0/1 scores, not a single occurrence rate:
 
 Action-level tables are a **micro-average** over the scored trials of that action (the test distribution as built). Condition-level tables report each condition on its own. Subsequent is gated on Immediate = 1.
 
-Scoring definitions: [`evaluation/APPENDIX.md`](evaluation/APPENDIX.md) and [`evaluation_rubric/`](evaluation_rubric/).
+Scoring definitions: [`evaluation/APPENDIX.md`](evaluation/APPENDIX.md).
 
 ---
 
@@ -49,14 +49,16 @@ Scoring definitions: [`evaluation/APPENDIX.md`](evaluation/APPENDIX.md) and [`ev
 
 ```
 evaluation/
-  direct_replay/inference/    # stream input.wav to a model
-  direct_replay/evaluation/   # Whisper ASR (asr.json)
-  direct_replay/data/         # prepare_*.py (pack extracted / HF clips)
-  simulator/inference/        # live cue / barge-in drivers
-  metrics/                    # Immediate + Subsequent
-  metrics/reports/            # table writers
+  data/                       # prepare_*.py; unpacked test set lives here
+  common/                     # streaming clients shared by both protocols
+  direct_replay/
+    inference/                # stream input.wav to a model (14 models)
+    metrics/                  # Wait, Ignore, Take turn, Backchannel
+  simulator_replay/
+    inference/                # live cue / barge-in drivers (10 models)
+    metrics/                  # Stop, Hold floor, Recover, Interrupt
+  scoring/                    # ASR, Immediate + Subsequent runner, report tables
   APPENDIX.md
-evaluation_rubric/            # per-action rubrics
 scripts/Candor/               # extract Candor clips you download yourself
 scripts/Loqui/                # extractors used to build the Loqui eval clips (already on the Hub)
 ```
@@ -86,7 +88,7 @@ Open-source local servers (Moshi, MiniCPM-o, …) need checkpoints. Point `OPENS
 
    ```bash
    python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
-     --out_dir evaluation/direct_replay/data
+     --out_dir evaluation/data
    ```
 
    Or load a single action as a `datasets` object (audio columns are `{path, bytes}`):
@@ -96,7 +98,7 @@ Open-source local servers (Moshi, MiniCPM-o, …) need checkpoints. Point `OPENS
    ds = load_dataset("LincolnD/DuplexAct", "wait", split="test")
    ```
 
-   Unpacked layout: `evaluation/direct_replay/data/<action>/<condition>/<sample_id>/`
+   Unpacked layout: `evaluation/data/<action>/<condition>/<sample_id>/`
    with the protocol audio (`input.wav`, or `lead_in.wav` + `cue.wav`, or Interrupt
    `user_speech.wav` / branch wavs), `metadata.json`, and per-action `manifest.json`.
 
@@ -108,7 +110,7 @@ Open-source local servers (Moshi, MiniCPM-o, …) need checkpoints. Point `OPENS
 
 ## Inference
 
-### Direct Replay (Wait, Backchannel, Ignore, Take turn)
+### Direct Replay (Wait, Ignore, Take turn, Backchannel)
 
 The user clip is streamed in real time. The model may speak over it. Output is time-aligned `output.wav` + `inference_info.json`.
 
@@ -141,10 +143,10 @@ evaluation/direct_replay/results/inference_results/
 
 ### Simulator Replay (Stop, Hold floor, Recover, Interrupt)
 
-The model first speaks from `lead_in.wav`. A cue (or, for Interrupt, ongoing user speech) is injected live. The same sample directories under `evaluation/direct_replay/data/` are used — there is no second test set.
+The model first speaks from `lead_in.wav`. A cue (or, for Interrupt, ongoing user speech) is injected live. The same sample directories under `evaluation/data/` are used — there is no second test set.
 
 ```bash
-cd evaluation/simulator/inference
+cd evaluation/simulator_replay/inference
 
 python run_action_batch.py --action stop --model gpt-realtime-2.1
 python run_action_batch.py --action hold_floor --model gpt-realtime-2.1
@@ -152,7 +154,19 @@ python run_action_batch.py --action respond_and_recover --model gpt-realtime-2.1
 python run_interrupt_batch.py --model gpt-realtime-2.1
 ```
 
-Cluster launchers (`slurm_*.sh`) still contain the original HPC paths; treat them as templates and set `PROJECT_ROOT` / `DUPLEXACT_ROOT`.
+Simulator results go to `evaluation/simulator_replay/results/<action>/<condition>/<model>/<sample_id>/`.
+
+### Post-inference fixes
+
+Two models need one extra pass before scoring:
+
+```bash
+# Bayling: write its native text stream into model_speech_transcripts
+python evaluation/direct_replay/inference/backfill_bayling_transcripts.py
+
+# Lychee-FD: rebuild model_speech_segments from output.wav
+python evaluation/direct_replay/inference/recompute_lychee_fd_segments.py
+```
 
 ---
 
@@ -162,22 +176,22 @@ Most models are scored from Whisper `asr.json` on `output.wav`. Bayling and Raon
 
 ```bash
 # 1. ASR (skip for bayling-duplex / raon-speechchat)
-python evaluation/direct_replay/evaluation/asr_openai.py \
+python evaluation/scoring/asr_openai.py \
   --results_root evaluation/direct_replay/results/inference_results
 
 # 2. Immediate + Subsequent
-python evaluation/metrics/run_metrics.py --model gpt-realtime-2.1 --action wait
-python evaluation/metrics/run_metrics.py --immediate_only
-python evaluation/metrics/run_metrics.py --aggregate
+python evaluation/scoring/run_metrics.py --model gpt-realtime-2.1 --action wait
+python evaluation/scoring/run_metrics.py --immediate_only
+python evaluation/scoring/run_metrics.py --aggregate
 
 # 3. Backchannel Immediate is two-stage (text screen + audio judge)
-python evaluation/metrics/bc_two_stage_judge.py --model gpt-realtime-2.1
+python evaluation/direct_replay/metrics/bc_two_stage_judge.py --models gpt-realtime-2.1
 
-# 4. Tables
-bash evaluation/metrics/reports/make_reports.sh --all
+# 4. Tables (IMMEDIATE.md, SUBSEQUENT.md, TIMING.md)
+bash evaluation/scoring/reports/make_reports.sh
 ```
 
-`run_metrics.py` writes `evaluation/metrics/cache/<action>/<model>/<sample_id>.json`. Subsequent calls `gpt-5.4` (`temperature=0`, YES/NO JSON) except Stop Subsequent, which is automatic from segments.
+`run_metrics.py` writes `evaluation/scoring/cache/<action>/<model>/<sample_id>.json`. Subsequent calls `gpt-5.4` (`temperature=0`, YES/NO JSON) except Stop Subsequent, which is automatic from segments.
 
 ---
 
@@ -208,9 +222,9 @@ python scripts/Candor/batch_interruptions.py \
 Defaults inside the scripts still point at an internal cluster; **always pass `--candor_root` and `--results_dir`**. Then pack into the eval layout:
 
 ```bash
-python evaluation/direct_replay/data/prepare_wait_samples.py
-python evaluation/direct_replay/data/prepare_backchannel_samples.py
-python evaluation/direct_replay/data/prepare_stop_samples.py
+python evaluation/data/prepare_wait_samples.py
+python evaluation/data/prepare_backchannel_samples.py
+python evaluation/data/prepare_stop_samples.py
 # ...
 ```
 

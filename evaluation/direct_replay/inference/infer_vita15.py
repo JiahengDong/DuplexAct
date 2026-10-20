@@ -77,6 +77,10 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from realtime_common import RealtimeClientBase, SynchronizedRecorder, EventLogger
 from local_common import LocalServerManager, opensource_root_for
 
@@ -125,9 +129,8 @@ VAD_SILENCE_TAIL_S = 1.0
 SERVER_DISCONNECT_COOLDOWN_S = 4.0
 
 VITA_HOST = "127.0.0.1"
-# Per-job port offset, same rationale/collision risk as MOSHI_PORT/
-# FLM_AUDIO_PORT in slurm_infer_opensource.sh -- two same-model jobs can
-# land on the same physical node.
+# Per-job port, same rationale as MOSHI_PORT / FLM_AUDIO_PORT -- two
+# same-model jobs can land on the same physical node.
 VITA_PORT = int(os.environ.get("VITA15_SERVER_PORT", "8081"))
 
 _ROOT = opensource_root_for(VITA15_SLUG)
@@ -143,12 +146,12 @@ VITA_DEMO_ENV_PYTHON = str(_ROOT / "vita_demo_env" / "bin" / "python3")
 VITA_DEMO_CKPT = _ROOT / "demo_VITA_ckpt"
 REPO_DIR = _ROOT / "repo"
 
-LOG_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/evaluation/direct_replay/logs")
+LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 
 # One real dataset turn, streamed and thrown away, to warm the audio path (see
 # _warm_audio_path). Any sample works; pinned to a sorted glob so the warmup is
 # deterministic across chunks and its cost is a known constant.
-DATA_ROOT = Path("/data/gpfs/projects/punim2960/jiahengd/evaluation/direct_replay/data")
+DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 WARMUP_CLIP_GLOB = "turn_taking/take_turn_immediately/*/input.wav"
 WARMUP_CONTENT_S = 10.0
 # Stop pulling once TTS has been quiet this long: the leftover has to be pulled

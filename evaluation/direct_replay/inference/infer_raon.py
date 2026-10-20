@@ -63,6 +63,7 @@ from typing import Any, Optional
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 
 from realtime_common import (  # noqa: E402
     RealtimeClientBase, SynchronizedRecorder, EventLogger,
@@ -351,7 +352,7 @@ class RaonSpeechChatClient(RealtimeClientBase):
             # free_duplex_decoding_state -> destroy_stream racing it corrupts
             # the decoder worker's `stream_states`, which then surfaces as a
             # bogus first-frame error on the NEXT sample. Wait for the thread
-            # itself. Full root cause: slurm_fix_raon_speechchat_errors_v2.sh.
+            # itself.
             if not step_done.is_set():
                 await asyncio.to_thread(step_done.wait, STEP_DRAIN_TIMEOUT_S)
             await asyncio.to_thread(model.free_duplex_decoding_state, state)

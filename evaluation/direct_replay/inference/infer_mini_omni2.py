@@ -92,9 +92,7 @@ accepted (for interface uniformity with every other client) but unused.
 
 Practical setup notes:
   - `ffmpeg` must be on PATH (openai-whisper's `load_audio()` shells out to
-    it) -- NOT bundled in this venv; on this cluster it's a module
-    (`module load GCCcore/13.3.0 FFmpeg/7.1.1`), added to
-    slurm_infer_opensource.sh for this model specifically.
+    it) -- it is not bundled in the model venv.
   - Checkpoint: `gpt-omni/mini-omni2`'s own HF repo is a flat directory
     (`lit_model.pth`, `model_config.yaml`, `small.pt` Whisper weights,
     tokenizer files) consumed directly by `inference.load_model(ckpt_dir,
@@ -132,6 +130,8 @@ from typing import Optional
 
 import numpy as np
 import soundfile as sf
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 
 from local_common import BatchReplayClientBase, opensource_root_for
 

@@ -65,6 +65,8 @@ try:
 except ImportError as e:
     raise ImportError("websockets not installed. Run: pip install websockets") from e
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from local_common import LocalServerManager, env_for_model, opensource_root_for
 from realtime_common import RealtimeClientBase, SynchronizedRecorder, EventLogger
 
@@ -85,7 +87,7 @@ FRAME_SEC      = FRAME_SAMPLES / API_SR
 # multiple segments at every internal pause. 10 Mimi frames.
 MOSHI_SILENCE_GRACE_S = 0.8
 
-LOG_DIR = Path("/data/gpfs/projects/punim2960/jiahengd/evaluation/direct_replay/logs")
+LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 
 
 def _pcm_f32_to_i16_bytes(pcm_f32: np.ndarray) -> bytes:
@@ -111,7 +113,7 @@ class MoshiClient(RealtimeClientBase):
             env=env_for_model(MOSHI_SLUG),
             host=MOSHI_HOST, port=MOSHI_PORT,
             # Per-job log file (job ID suffix) -- with per-node port isolation
-            # (MOSHI_PORT, see slurm_infer_opensource.sh) two same-model
+            # (MOSHI_PORT) two same-model
             # jobs can legitimately run concurrently on one node; a shared
             # log path would otherwise interleave their output.
             log_path=LOG_DIR / f"moshi_server.{os.environ.get('SLURM_JOB_ID', 'local')}.log",

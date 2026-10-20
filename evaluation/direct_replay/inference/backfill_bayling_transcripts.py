@@ -43,9 +43,9 @@ import statistics
 import sys
 from pathlib import Path
 
-REPO = Path("/data/gpfs/projects/punim2960/jiahengd")
-SIM_INFERENCE = REPO / "evaluation" / "simulator" / "inference"
-sys.path.insert(0, str(SIM_INFERENCE))
+REPO = Path(os.environ.get("DUPLEXACT_ROOT") or Path(__file__).resolve().parents[3])
+sys.path.insert(0, str(REPO / "evaluation" / "common"))
+sys.path.insert(0, str(REPO / "evaluation" / "simulator_replay" / "inference"))
 
 from stop_common import default_model_speech_transcripts  # noqa: E402
 

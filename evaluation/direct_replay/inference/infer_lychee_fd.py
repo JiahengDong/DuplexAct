@@ -119,16 +119,10 @@ vllm/vllm/` (the exact copy `scripts/start_backend.sh`'s own
 (`third_party/vllm`) to `sys.path` here, before the pip-installed copy can
 ever be imported -- confirmed via `import vllm; vllm.MultiHeadRequestState`
 resolving correctly with this ordering. All of this -- checkpoints, venv,
-and the patched vllm source tree -- lives under the same `punim2758`-backed
-`opensource_models/lychee-fd/` mount already used for every other model's
-large storage, not `punim2960`.
+and the patched vllm source tree -- lives under `opensource_models/lychee-fd/`, like every other
+model's large storage.
 
-Not yet GPU-validated end-to-end (written and import-tested only) at the
-time of this change -- Spartan's GPU partitions were administratively DOWN
-for cluster maintenance. A smoke-test job is queued (`slurm_smoke_lychee_fd_
-vllm.sh`) to auto-run once partitions reopen; see that job's log before
-trusting any real inference results from this backend. Set
-`LYCHEEFD_USE_VLLM=0` to fall back to the previously-smoke-tested HF backend
+Set `LYCHEEFD_USE_VLLM=0` to fall back to the previously-smoke-tested HF backend
 (§2-§9 above) if the vLLM path turns out to need further fixes.
 
 Standalone usage (single sample, for debugging):
@@ -149,6 +143,8 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 
 from local_common import opensource_root_for
 from realtime_common import (

@@ -75,6 +75,8 @@ from typing import Optional
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from local_common import BatchReplayClientBase, opensource_root_for
 
 VOILA_SLUG = "voila-autonomous"
@@ -85,7 +87,7 @@ AUDIO_SR = 16_000          # Voila's own AUDIO_SR (tokenize_func.py) and Voila-T
 FRAME_RATE_HZ = 25.0       # Voila-Tokenizer EnCodec: 16000 / (8*5*4*4) = 25
 INPUT_TRAILING_PAD_S = 8.0 # silence appended after the real clip so the model has room to finish speaking
 
-REPO_ROOT = Path("/data/gpfs/projects/punim2960/jiahengd")
+REPO_ROOT = Path(__file__).resolve().parents[3]
 VOILA_REPO_DIR = opensource_root_for(VOILA_SLUG) / "repo"
 REF_AUDIO_PATH = VOILA_REPO_DIR / "examples" / "test1.mp3"
 

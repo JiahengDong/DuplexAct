@@ -1,6 +1,6 @@
 # Appendix: Evaluation Protocols and Action Metrics
 
-Source of truth for scoring: `evaluation/metrics/`.
+Source of truth for scoring: `evaluation/scoring/`.
 This note is written so it can be copied into the paper appendix with light editing.
 
 Every Level-2 action is scored as two 0/1 halves:
@@ -24,7 +24,7 @@ Unless noted, Immediate is automatic from time-aligned `model_speech_segments` o
 
 **Timeline.** $t=0$ is stream start unless an action re-anchors (user-speech end, cue onset, interruption offset, user onset). `input` and `output` share the same clock. Trailing padding after user-speech end is outside Immediate unless the action says otherwise.
 
-**Headline population.** Listen actions (Wait, Backchannel, Ignore, Take turn) and Interrupt: all scored samples. Stop / Hold floor / Recover: the cue landed while the model was **speaking** — `cue_class = speaking`, i.e. a post-lead-in model turn overlaps cue onset (`evaluation/metrics/cue_landing.py`). **Forced is allowed.** Cue in silence (`no_reply`) or after the model already finished (`finished`) is coverage, not in the Immediate denominator. Transport-error trials are dropped, not scored as silence.
+**Headline population.** Listen actions (Wait, Backchannel, Ignore, Take turn) and Interrupt: all scored samples. Stop / Hold floor / Recover: the cue landed while the model was **speaking** — `cue_class = speaking`, i.e. a post-lead-in model turn overlaps cue onset (`evaluation/scoring/cue_landing.py`). **Forced is allowed.** Cue in silence (`no_reply`) or after the model already finished (`finished`) is coverage, not in the Immediate denominator. Transport-error trials are dropped, not scored as silence.
 
 ---
 
@@ -399,7 +399,7 @@ Diagnostic: $\Delta =$ first in-window onset $-$ `t_target` (falls back to $t_{\
 
 ## H. Immediate and timing metrics (as implemented)
 
-Source: `evaluation/metrics/*.py`. Immediate is $0/1$ from `model_speech_segments` `(on, off)` on the shared clock, plus per-segment ASR when a backchannel vs takeover decision is required. Bounds are **inclusive** unless noted. Overlap is half-open in the usual interval sense: $on < t_{hi}$ and $off > t_{lo}$.
+Source: `evaluation/scoring/*.py`. Immediate is $0/1$ from `model_speech_segments` `(on, off)` on the shared clock, plus per-segment ASR when a backchannel vs takeover decision is required. Bounds are **inclusive** unless noted. Overlap is half-open in the usual interval sense: $on < t_{hi}$ and $off > t_{lo}$.
 
 Headline Immediate: listen actions and Interrupt = all scored samples. Stop / Hold floor / Recover = speaking-at-cue (`cue_class=speaking`); **forced allowed**. `immediate_unforced` is a diagnostic. Cue in silence or after the model already finished is coverage.
 
@@ -566,7 +566,7 @@ LLM wording is Section I. Direct Replay: Immediate fail is N/A; no later respons
 
 ## I. Judge prompts (as implemented)
 
-Source: `evaluation/metrics/*.py` and `run_metrics.py`. There is **no** single shared GPT-5.4 system prompt. Each action has its own `JUDGE_SYSTEM_PROMPT`. The shared contract is:
+Source: `evaluation/scoring/*.py` and `run_metrics.py`. There is **no** single shared GPT-5.4 system prompt. Each action has its own `JUDGE_SYSTEM_PROMPT`. The shared contract is:
 
 - Stem: `You are a strict, consistent evaluator for a full-duplex spoken dialogue benchmark.`
 - Use **only** the given evidence. Ambiguous or insufficient $\rightarrow$ **NO**.
@@ -931,8 +931,6 @@ the rule/screened/function decomposition: `BC_TWO_STAGE.md`.
 ## J. Systems under test (checkpoints and API IDs)
 
 Source: `evaluation/direct_replay/inference/model_registry.py` and each client’s `DEFAULT_MODEL`. One checkpoint / API ID per slug; no multi-revision sweep. Hugging Face repos are loaded by repo id (no pinned commit in the client). Closed-source IDs are whatever that API served during **2026-09-06 – 2026-09-13** (UTC). `grok-voice-latest` is a floating alias.
-
-Nova Sonic (`amazon.nova-2-sonic-v1:0`) is registered but has no client and was not run. Nemotron VoiceChat (`nvidia/NVIDIA-NemotronLabs-VoiceChat-11B`) is implemented for direct replay but is not in the reported roster.
 
 **Protocol.** DR = direct replay (Wait / Backchannel / Ignore / Take turn). Sim = simulator (Stop / Hold floor / Recover / Interrupt). Simulator production roster requires a live text signal for the trigger LLM; Lychee-FD has a cue client but is DR-only in the reported tables. VITA-1.5 / Voila / Mini-Omni2 are DR-only (no incremental live-text driver for cue injection).
 

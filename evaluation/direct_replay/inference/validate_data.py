@@ -38,7 +38,7 @@ def _duplexact_root() -> Path:
             return p
     return here.parents[min(3, len(here.parents)-1)]
 
-DATA_ROOT = _duplexact_root() / "evaluation" / "direct_replay" / "data"
+DATA_ROOT = _duplexact_root() / "evaluation" / "data"
 
 # Required (non-None) metadata.json fields per (action, l3_dir), mirroring
 # build_eval_instance.py's _build_* functions exactly.

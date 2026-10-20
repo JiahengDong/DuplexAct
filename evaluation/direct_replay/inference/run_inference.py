@@ -52,6 +52,8 @@ import soundfile as sf
 from dotenv import load_dotenv
 
 from model_registry import get_model_spec, get_client_cls, all_registered_models
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from realtime_common import result_dir_for
 from validate_data import validate_sample
 
@@ -69,7 +71,7 @@ def _duplexact_root() -> Path:
     return here.parents[min(3, len(here.parents)-1)]
 
 REPO_ROOT     = _duplexact_root()
-DEFAULT_DATA_ROOT    = REPO_ROOT / "evaluation" / "direct_replay" / "data"
+DEFAULT_DATA_ROOT    = REPO_ROOT / "evaluation" / "data"
 DEFAULT_RESULTS_ROOT = REPO_ROOT / "evaluation" / "direct_replay" / "results" / "inference_results"
 
 ACTIONS = ["wait", "backchannel", "ignore", "turn_taking"]
@@ -82,39 +84,17 @@ ACTIONS = ["wait", "backchannel", "ignore", "turn_taking"]
 # covers connect/handshake/close plus generous headroom.
 SAMPLE_TIMEOUT_OVERHEAD_S = 90.0
 
-# One-time, untimed model-load hook (code review, nemotron-voicechat
-# incident 2026-09): a fresh `client_cls(...)` is constructed per sample,
-# but some clients cache a heavy model at the CLASS level (e.g.
-# NemotronVoiceChatClient._load caching an 11B-parameter checkpoint) so the
-# actual multi-GB load only ever needs to happen once per process. Problem
-# is that first load can alone take longer than SAMPLE_TIMEOUT_OVERHEAD_S
-# was ever sized for (90s was tuned for connect/handshake/close, not a
-# multi-minute from-disk checkpoint load) -- so sample #1 always times out
-# while the load is still in flight inside an `asyncio.to_thread` worker
-# thread that CANNOT actually be cancelled (Python threads aren't
-# interruptible), and the automatic retry immediately fires a SECOND
-# concurrent load attempt on the same GPU before the first one finishes,
-# repeating up to RETRYABLE_ERROR_RETRIES times -- multiple concurrent
-# copies of an 11B-param model competing for the same GPU's VRAM reliably
-# ends in CUDA OOM, poisoning every sample for the rest of the job.
-# `client_cls.warmup()` (default no-op on BatchReplayClientBase /
-# RealtimeClientBase) gives a client an explicit place to pay that one-time
-# cost, called once up front with its own generous timeout, so no per-
-# sample timeout or retry can ever race a load that's already in flight.
+# One-time, untimed model-load hook: a fresh `client_cls(...)` is built per
+# sample, but some clients cache a heavy model at the class level. The first
+# load can take longer than SAMPLE_TIMEOUT_OVERHEAD_S, and since a load
+# running inside `asyncio.to_thread` cannot be cancelled, a timeout + retry
+# would start a second concurrent load on the same GPU and OOM.
+# `client_cls.warmup()` (no-op by default) pays that cost once up front.
 WARMUP_TIMEOUT_S = 900.0
 
-# Per-model override for SAMPLE_TIMEOUT_OVERHEAD_S (code review, nemotron-
-# voicechat incident 2026-09, part 2): fixing the warmup race above still
-# left every nemotron-voicechat sample timing out -- its no-KV-cache
-# autoregressive decode (see infer_nemotron_voicechat.py's "no-cache mode"
-# log line: every step reprocesses the FULL token history, so per-step
-# latency grows through the response instead of staying flat) measured at
-# ~500 of 1551 steps still in flight after the default 90s+input_duration
-# budget, well past 3 minutes and climbing. Rather than raise the shared
-# 90s for every model (would mask genuinely-stuck connections for the
-# fast/API-based ones this constant was tuned for), a client can opt into
-# a larger overhead via this class attribute, read by client_cls below
-# instead of the module-level default when present.
+# Per-model override for SAMPLE_TIMEOUT_OVERHEAD_S: a slow local client can
+# set a larger overhead as a class attribute instead of raising the shared
+# default, which would mask stuck connections for the API-based models.
 DEFAULT_TIMEOUT_OVERHEAD_S = SAMPLE_TIMEOUT_OVERHEAD_S
 
 # Metadata `input_duration` vs. the actual input.wav duration should always
@@ -736,23 +716,7 @@ def main():
     parser.add_argument("--l3_condition", default=None,
                          help="Restrict to one l3_condition subfolder. Default: all for the action.")
     parser.add_argument("--model", required=True,
-                         help=(
-                             # F-23: this list includes slugs (e.g.
-                             # nova-2-sonic) whose ModelSpec is registered but
-                             # whose client isn't implemented yet (pending
-                             # e.g. Bedrock access) -- selecting one raises a
-                             # clear NotImplementedError from get_client_cls()
-                             # rather than silently doing nothing. We
-                             # deliberately do NOT call available_models()
-                             # here to build a "runnable now" sublist: that
-                             # eagerly imports every OTHER model's client too
-                             # (heavy for open-source torch/transformers
-                             # models), which would slow down/side-effect
-                             # every single invocation just to render --help.
-                             f"Model slug (not all registered slugs are implemented yet -- "
-                             f"an unimplemented one raises NotImplementedError). "
-                             f"Registered: {all_registered_models()}"
-                         ))
+                         help=f"Model slug. Registered: {all_registered_models()}")
     parser.add_argument("--data_root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--results_root", type=Path, default=DEFAULT_RESULTS_ROOT)
     parser.add_argument("--workers", type=int, default=4,

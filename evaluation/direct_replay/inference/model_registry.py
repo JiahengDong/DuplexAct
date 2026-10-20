@@ -15,6 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional, Type
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from realtime_common import RealtimeClientBase
 
 # Batch-replay clients (e.g. infer_voila.py) implement the same
@@ -109,11 +114,6 @@ def _load_lychee_fd_cls():
     return LycheeFDClient
 
 
-def _load_nemotron_voicechat_cls():
-    from infer_nemotron_voicechat import NemotronVoiceChatClient
-    return NemotronVoiceChatClient
-
-
 # Lazily-resolved so importing this module never requires every model's SDK
 # (e.g. google-genai, boto3, sphn) to be installed just to run one model's
 # batch -- doubly important for open-source models, since each one lives in
@@ -134,8 +134,6 @@ _LAZY_LOADERS: dict[str, Callable[[], Type[RealtimeClientBase]]] = {
     "vita-1.5":                    _load_vita15_cls,
     "flm-audio":                   _load_flm_audio_cls,
     "lychee-fd":                   _load_lychee_fd_cls,
-    "nemotron-voicechat":          _load_nemotron_voicechat_cls,
-    # "nova-2-sonic":                  lambda: __import__("infer_nova_sonic").NovaSonicClient,
 }
 
 MODEL_SPECS: dict[str, ModelSpec] = {
@@ -151,13 +149,6 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         model_name="gemini-3.1-flash-live-preview",
         client_cls=None,
         api_key_env="GEMINI_API_KEY",
-        default_system_prompt=DEFAULT_SYSTEM_PROMPT,
-    ),
-    "nova-2-sonic": ModelSpec(
-        slug="nova-2-sonic",
-        model_name="amazon.nova-2-sonic-v1:0",
-        client_cls=None,
-        api_key_env="AWS_PROFILE",   # Bedrock uses AWS credential chain, not a single key
         default_system_prompt=DEFAULT_SYSTEM_PROMPT,
     ),
     "grok-voice": ModelSpec(
@@ -245,19 +236,6 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         client_cls=None,
         api_key_env="LOCAL_NO_KEY",
         default_system_prompt="",   # run_chunk_dialogue_inference() has no per-call system-prompt parameter
-    ),
-    "nemotron-voicechat": ModelSpec(
-        slug="nemotron-voicechat",
-        model_name="nvidia/NVIDIA-NemotronLabs-VoiceChat-11B",   # HF repo id, downloaded to a flat local dir
-        client_cls=None,
-        api_key_env="LOCAL_NO_KEY",
-        default_system_prompt=(
-            "You are an AI voice assistant developed by NVIDIA. "
-            "Your name is NVIDIA Voice Chat. "
-            "Answer in a spoken, conversational style rather than a written one. "
-            "Do not repeat the same sentence over and over again. "
-            "Start the conversation by greeting the user."
-        ),   # verbatim copy of the official offline_voicechat_infer.py's own DEFAULT_SYSTEM_PROMPT
     ),
 }
 

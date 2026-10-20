@@ -2,11 +2,8 @@
 """
 evaluation/direct_replay/inference/recompute_lychee_fd_segments.py
 ======================================================================
-One-off (re-runnable, idempotent) fix-up script for a bug found while
-implementing lychee-fd's `stop`-action simulator client
-(evaluation/simulator/inference/infer_stop_lychee_fd.py). Full root-cause
-writeup: evaluation/simulator/MODEL_COMPATIBILITY.md's "SEVERE finding"
-section.
+Re-runnable, idempotent post-inference fix-up for lychee-fd. Run it after
+direct-replay inference for lychee-fd and before scoring.
 
 Summary of the bug: `infer_lychee_fd.py`'s `model_speech_segments` are
 derived from the model's own native `round_trace["events"]`, whose
@@ -24,12 +21,8 @@ samples are unaffected -- only the derived event LABELS are wrong).
 
 Fix: re-derive `model_speech_segments` directly from each sample's own
 `output.wav` audio energy (see `realtime_common.
-recompute_speech_segments_from_audio()` for the method/tuning), the same
-fix now built into `infer_stop_lychee_fd.py` for new simulator runs. This
-script applies that identical fix retroactively to the EXISTING
-`inference_results/**/lychee-fd/*/inference_info.json` production files
-(the "2000/2000 clean" dataset referenced in prior status updates) so
-already-collected data isn't left silently wrong.
+recompute_speech_segments_from_audio()` for the method/tuning), applied to
+every `inference_results/**/lychee-fd/*/inference_info.json`.
 
 Safety / idempotency:
   - The ORIGINAL `model_speech_segments` value is preserved under a new
@@ -55,12 +48,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 from realtime_common import recompute_speech_segments_from_audio  # noqa: E402
 
-DEFAULT_RESULTS_ROOT = Path(
-    "/data/gpfs/projects/punim2960/jiahengd/evaluation/direct_replay/results/inference_results"
-)
+DEFAULT_RESULTS_ROOT = Path(__file__).resolve().parents[1] / "results" / "inference_results"
 
 
 def _segment_total(segments) -> float:

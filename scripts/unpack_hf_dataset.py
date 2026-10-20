@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Restore DuplexAct parquet (Hub layout) to evaluation/direct_replay/data/.
+"""Restore DuplexAct parquet (Hub layout) to evaluation/data/.
 
     python scripts/unpack_hf_dataset.py --local_dir /path/to/hf_export \
-      --out_dir evaluation/direct_replay/data
+      --out_dir evaluation/data
     python scripts/unpack_hf_dataset.py --repo_id LincolnD/DuplexAct \
-      --out_dir evaluation/direct_replay/data
+      --out_dir evaluation/data
 """
 from __future__ import annotations
 

@@ -83,6 +83,8 @@ except ImportError as e:
     # instead of just marking this one model unavailable.
     raise ImportError("websockets not installed. Run: pip install websockets") from e
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
+
 from realtime_common import (
     RealtimeClientBase, SynchronizedRecorder, EventLogger,
     sleep_until_deadline, classify_terminal_response_status,
