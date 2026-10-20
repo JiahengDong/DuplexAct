@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_qwen_realtime.py
-
 Qwen3.5-Omni-Flash-Realtime (DashScope) client for the `stop` Level-2
-action. Thin subclass of realtime_api_stop_common -- session.update matches
-direct_replay/inference/infer_qwen_realtime.py, never imported by it.
+action. Thin subclass of realtime_api_stop_common; session.update matches
+direct_replay/inference/infer_qwen_realtime.py.
 
-Qwen is GA-Realtime-shaped but not a drop-in GPT twin:
+Differences from the GPT Realtime API:
   - WS URL is wss://{DASHSCOPE_WS_HOST}/api-ws/v1/realtime?model=...
   - session.update is flat (modalities/voice/pcm format strings)
   - input PCM is 16 kHz, output PCM is 24 kHz
-  - live text: DR drops transcript events; this client surfaces
-    response.audio_transcript.delta, and falls back to
-    response.audio_transcript.done when no deltas arrived (Qwen's
-    observed DR wire: .done without logged .delta)
+  - live text comes from response.audio_transcript.delta, falling back to
+    response.audio_transcript.done when Qwen sends no deltas
 
-Unlike the DR client, this simulator does NOT send response.cancel on
-speech_started -- same contract as GPT/Grok stop clients. Cancelling
-here would implement "stop" in our client instead of measuring the model.
+Like the GPT/Grok stop clients, this does not send response.cancel on
+speech_started: cancelling client-side would implement "stop" for the
+model instead of measuring it.
 
 hold_floor / respond_and_recover reuse this client via run_action_batch.py.
 """

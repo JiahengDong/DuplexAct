@@ -18,7 +18,7 @@ DATA_ACTION = "ignore"
 # Distractor span. Metadata aliases: background uses bg_speech_start_s /
 # bg_speech_end_s; other-directed uses side_speech_start_s /
 # side_speech_end_s. Unified scoring keys: t_other_start / t_other_end.
-# No extra grace after t_other_end (unlike the old 0.5 s SR window).
+# No extra grace after t_other_end.
 # Trailing user speech after the distractor is outside Immediate.
 
 DEFINITION = (

@@ -15,12 +15,11 @@ ACTION_ID = "hold_floor"
 DATA_ACTION = "hold_floor"
 
 # Immediate window is the cue plus a 1.0 s yielding tail:
-# [t_cue_start, t_cue_end + YIELD_WINDOW_S].
-# Short continuer cues ("Yes." / "Hmm.") are otherwise shorter than
-# MAX_GAP_S, so a full yield inside the raw cue would still pass.
-# Same 1.0 s as Stop's last-second yielding / take-turn-with-overlap
-# lookback — try this tail first. Pass if max silence in that window
-# ≤ MAX_GAP_S. Diagnostic: the observed max gap.
+# [t_cue_start, t_cue_end + YIELD_WINDOW_S]. Short continuer cues
+# ("Yes." / "Hmm.") can be shorter than MAX_GAP_S, so without the tail a
+# full yield inside the cue would still pass. The 1.0 s matches Stop's
+# last-second yielding and take-turn-with-overlap lookback. Pass if the max
+# silence in the window is ≤ MAX_GAP_S; the observed max gap is reported.
 YIELD_WINDOW_S = 1.0
 MAX_GAP_S = 0.50
 

@@ -1,37 +1,17 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_minicpm.py
+OpenBMB MiniCPM-o 4.5 client for the simulator-driven `stop` action (live
+LLM-triggered cue injection, see trigger_controller.py).
 
-OpenBMB MiniCPM-o 4.5 client for the `stop` Level-2 action,
-simulator-driven (live LLM-triggered injection -- see
-trigger_controller.py's module docstring for the full architecture
-rationale).
+Uses the same duplex loop as direct_replay/inference/infer_minicpm_o.py:
+model.as_duplex()'s `streaming_prefill`/`streaming_generate` on 1.0s chunks.
+`is_listen`, not `audio_waveform is not None`, is the speaking signal. Each
+chunk's `result["text"]` is fed to `LiveTriggerController.on_text()`, and
+input comes from a `DynamicPCMSource` so the cue can be injected live.
 
-Reuses direct_replay/inference/infer_minicpm_o.py's exact duplex-driving
-pattern (model.as_duplex()'s `streaming_prefill`/`streaming_generate`
-chunk-in/chunk-out pair, 1.0s chunks, `is_listen`/`text`/`end_of_turn`
-fields -- see that file's own module docstring for the full API writeup
-and its documented caveat that `audio_waveform is not None` alone is NOT a
-reliable speaking signal for audio-only duplex, `is_listen` must be
-checked instead). This is a DIRECT PORT (per MODEL_COMPATIBILITY.md): the
-per-chunk `result["text"]` field is already a live signal the original
-client receives every chunk (it just doesn't act on it beyond event
-logging) -- so, unlike raon-speechchat, no new signal-sourcing logic is
-needed, only wiring that already-present field into
-`LiveTriggerController.on_text()` and swapping the fixed-length input loop
-for `DynamicPCMSource`-driven injection (same restructuring as
-infer_stop_moshi.py did to infer_moshi.py).
+The trigger poll interval is the 1.0s simulated-user cadence.
 
-Native duplex granularity is the 1.0s chunk. Poll interval is the unified
-1.0s simulated-user cadence (POLL_INTERVAL_S), not 10x that chunk.
-
-This file is deliberately a SEPARATE module from
-direct_replay/inference/infer_minicpm_o.py (never touches it, never
-imported by it, loads its own independent copy of the model into this
-process) -- see trigger_controller.py's own module docstring for the
-"always a separate module" rule.
-
-Standalone usage (single sample, for smoke testing):
+Standalone usage (single sample):
     python infer_stop_minicpm.py --sample_dir <path to Candor_stop_0038 etc> \\
         --output_wav out.wav --events_path events.jsonl
 """
@@ -59,8 +39,8 @@ from stop_common import stop_cli_main, POST_CUE_OBSERVATION_S  # noqa: E402
 MINICPM_SLUG = "minicpm-o-4.5"
 DEFAULT_MODEL = "openbmb/MiniCPM-o-4_5"
 
-INPUT_SR  = 16_000   # matches infer_minicpm_o.py's own librosa.load(..., sr=16000) convention
-OUTPUT_SR = 24_000   # matches generate_duplex_video's output_sample_rate=24000
+INPUT_SR  = 16_000   # model's audio input rate
+OUTPUT_SR = 24_000   # generate_duplex_video's output_sample_rate
 
 CHUNK_SEC = 1.0
 MAX_NEW_SPEAK_TOKENS_PER_CHUNK = 20

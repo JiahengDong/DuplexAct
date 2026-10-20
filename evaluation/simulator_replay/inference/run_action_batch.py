@@ -1,23 +1,11 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/run_action_batch.py
-======================================================
-Action-generalized sibling of run_stop_batch.py -- drives `hold_floor` and
-`respond_and_recover` (the two OTHER Level-2 actions confirmed to share
-stop's own lead_in.wav/cue.wav/metadata.json live-cue-injection shape, see
-cue_action_common.py's own module docstring for why interrupt_user is
-excluded) through the exact same per-model infer_stop_<model>.py clients,
-completely unchanged, just via cue_action_common.run_cue_action_sample_cli
-instead of stop_common.run_stop_sample_cli.
-
-Deliberately reuses run_stop_batch.py's MODEL_REGISTRY, retry/dedup/publish
-helpers, and overall shape BY IMPORT (not by duplicating the code) -- the
-only real differences are: (1) which driver function gets called per
-sample, (2) sample discovery has to glob across each action's multiple
-condition subdirectories instead of stop's single `direct_interruption/`
-dir, (3) results land under `results/<action>/<model>/` instead of
-`results/stop/<model>/`. run_stop_batch.py itself is never imported BY
-this file's own callers and never modified -- this is purely additive.
+Batch runner for the `hold_floor` and `respond_and_recover` simulator
+actions, which share stop's lead_in.wav/cue.wav/metadata.json cue-injection
+layout. Runs the per-model infer_stop_<model>.py clients through
+cue_action_common.run_cue_action_sample_cli, reusing run_stop_batch.py's
+MODEL_REGISTRY and retry/publish helpers. Samples are discovered across each
+action's condition subdirectories; results go to `results/<action>/<model>/`.
 
 Usage:
     python run_action_batch.py --action respond_and_recover --model moshi --limit 3 --verbose
@@ -67,13 +55,8 @@ DEFAULT_RESULTS_ROOT = REPO_ROOT / "evaluation" / "simulator_replay" / "results"
 
 def _discover_sample_dirs(data_root: Path) -> list[Path]:
     """
-    Unlike stop's single `direct_interruption/` subdir, hold_floor and
-    respond_and_recover each have multiple condition subdirectories (e.g.
-    respond_and_recover/{enrich,shorten,repeat,shift_topic,ask_follow_up,
-    correct_response_after_interruption}_.../<sample_id>/) -- glob two
-    levels down and filter to real sample dirs (must contain lead_in.wav,
-    excludes the *.json manifest/report files sitting alongside the
-    condition subdirs at the top level).
+    Sample dirs live under `<data_root>/<condition>/<sample_id>/`; return
+    every such dir that contains a lead_in.wav.
     """
     return sorted(
         p for p in data_root.glob("*/*")
@@ -95,8 +78,7 @@ async def run_one_sample(
         lead_in_duration = sf.info(str(sample_dir / "lead_in.wav")).duration
     except Exception:
         lead_in_duration = None
-    # Same slack as run_stop_batch: T_SEARCH/T_ONSET after lead-in, not the
-    # retired 20s-from-t=0 MAX_WAIT.
+    # Same hard timeout as run_stop_batch: lead-in plus trigger search/onset slack.
     sample_timeout = (lead_in_duration or 10.0) + SAMPLE_TIMEOUT_OVERHEAD_S + 20.0
 
     args = argparse.Namespace(

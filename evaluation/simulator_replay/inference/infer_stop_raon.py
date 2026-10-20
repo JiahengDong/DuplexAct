@@ -1,51 +1,22 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_raon.py
+KRAFTON/Raon-SpeechChat-9B client for the `stop` action, with the cue
+injected live by an LLM trigger (see trigger_controller.py).
 
-KRAFTON/Raon-SpeechChat-9B client for the `stop` Level-2 action,
-simulator-driven (live LLM-triggered injection -- see
-trigger_controller.py's module docstring for the full architecture
-rationale).
+`duplex_decoding_step` consumes one 80ms frame of raw PCM and returns one
+80ms frame of output PCM (silence when the model is not speaking); the
+model uses a Mimi codec at 12.5Hz like Moshi (see infer_raon.py). Because
+the per-step input is raw PCM, the byte-level `DynamicPCMSource` /
+`LiveTriggerController` path works as in infer_stop_moshi.py.
 
-Raon's own per-frame API (raon/utils/wrapper.py's `RaonInferenceModel.
-duplex_decoding_step`) is an exact 1:1 frame-synchronous call: every
-invocation consumes exactly one 80ms frame of raw PCM and returns exactly
-one 80ms frame of output PCM (silence-coded when the model isn't
-speaking) -- see infer_raon.py's own module docstring for the full
-architecture writeup (Qwen3 LLM + Voxtral-Mini audio encoder + Mimi codec,
-SAME codec family/frame geometry as Moshi, 12.5Hz/80ms). This is simpler to
-adapt than bayling-duplex: since the per-call unit is already raw PCM (not
-pre-tokenized audio tokens), the existing byte-level `DynamicPCMSource` /
-`LiveTriggerController` machinery (same as infer_stop_moshi.py) works
-directly -- no token-domain source needed here.
+Live text: the model's text tokens accumulate on `state.sequences`. As in
+KRAFTON's demo backend (demo/realtime/runtime/session.py), each step decodes
+the new token ids since the previous step, skipping SIL/PAD/EPAD special
+tokens. The helper functions are copied from that file because importing it
+pulls in the demo's FastAPI/sglang serving stack.
 
-Live text signal: this was the "MINOR ADJUST" flagged in
-MODEL_COMPATIBILITY.md -- infer_raon.py's client never reads text at all
-(only `state.machine_state.phase` for speaking/not-speaking), but the
-model DOES generate real text tokens internally every step, on
-`state.sequences` (a growing tensor of ALL token ids, input+generated,
-frame-synchronized). KRAFTON's own official demo backend
-(demo/realtime/runtime/session.py's `RealtimeDuplexSession._decode_step`)
-already extracts exactly this signal every frame: diff `state.sequences`
-against the length recorded after the previous step, then run the new
-token ids through `_decode_text_tokens()` (skip SIL/PAD/EPAD-family
-special tokens, decode the rest through the tokenizer). The two small
-helpers this needs (`_resolve_ignored_token_ids`, `_decode_text_tokens`,
-`_encode_single_token`, `_safe_int_attr`) are copied verbatim from that
-file below (self-contained, no FastAPI/sglang dependency) rather than
-imported, since session.py's own module-level imports pull in the
-official demo's full serving stack (FastAPI, sglang backend) which our
-much simpler `direct_replay`-style HF-transformers-only environment does
-not have installed, and was never meant to.
-
-This file is deliberately a SEPARATE module from
-direct_replay/inference/infer_raon.py (never touches it, never imported by
-it, loads its own independent copy of the model into this process) -- see
-trigger_controller.py's own module docstring for the "always a separate
-module" rule.
-
-Standalone usage (single sample, for smoke testing):
-    python infer_stop_raon.py --sample_dir <path to Candor_stop_0038 etc> \\
+Standalone usage (single sample):
+    python infer_stop_raon.py --sample_dir <stop sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -72,7 +43,7 @@ from stop_common import stop_cli_main, POST_CUE_OBSERVATION_S  # noqa: E402
 
 RAON_SLUG = "raon-speechchat"
 DEFAULT_MODEL = "KRAFTON/Raon-SpeechChat-9B"
-API_SR = 24000   # RaonProcessor.sampling_rate (Mimi codec) -- same both directions
+API_SR = 24000   # RaonProcessor.sampling_rate (Mimi codec), both directions
 
 REPO_DIR = opensource_root_for(RAON_SLUG) / "repo"
 REF_SPEAKER_AUDIO = REPO_DIR / "data" / "duplex" / "eval" / "audio" / "spk_ref.wav"
@@ -84,13 +55,12 @@ DEFAULT_SYSTEM_PROMPT = (
 if str(REPO_DIR / "src") not in sys.path:
     sys.path.insert(0, str(REPO_DIR / "src"))
 
-RAON_NATIVE_FRAME_SEC = 1.0 / 12.5   # 80ms, same Mimi frame geometry as Moshi
-RAON_POLL_INTERVAL_S = poll_interval_for_native_chunk(RAON_NATIVE_FRAME_SEC)  # 1.0s unified user-side poll
+RAON_NATIVE_FRAME_SEC = 1.0 / 12.5   # 80ms Mimi frame
+RAON_POLL_INTERVAL_S = poll_interval_for_native_chunk(RAON_NATIVE_FRAME_SEC)
 
 
-# ── Text-decode helpers (copied verbatim from KRAFTON's own official demo
-# backend, demo/realtime/runtime/session.py -- see module docstring for why
-# these are copied rather than imported) ─────────────────────────────────
+# ── Text-decode helpers (copied from KRAFTON's demo backend,
+# demo/realtime/runtime/session.py) ──────────────────────────────────────
 
 def _safe_int_attr(obj: Any, name: str, default: Optional[int] = None) -> Optional[int]:
     value = getattr(obj, name, None)
@@ -223,11 +193,9 @@ class RaonSpeechChatStopClient(RealtimeClientBase):
 
     @classmethod
     async def warmup(cls) -> None:
-        # Same 2026-09-06 incident as direct_replay/inference/infer_raon.py:
-        # 9B + Voxtral + Mimi load can exceed the per-sample hard timeout.
-        # Timeout then retries into a still-initializing ConcurrentAudioDecoder
-        # and every later sample dies with `Audio decoder worker error: <N>`.
-        # Load once, untimed, before the first sample. Do not edit infer_raon.py.
+        # Loading 9B + Voxtral + Mimi can exceed the per-sample timeout, and a
+        # retry into a still-initializing ConcurrentAudioDecoder breaks every
+        # later sample. Load once, untimed, before the first sample.
         await asyncio.to_thread(cls._load, DEFAULT_MODEL)
 
     async def _connect_and_stream(self, input_pcm: np.ndarray, input_duration: float,
@@ -299,12 +267,10 @@ class RaonSpeechChatStopClient(RealtimeClientBase):
 
         trigger_task.add_done_callback(_on_trigger_done)
 
-        # Same threading.Event-based safe-cancellation pattern as
-        # infer_raon.py -- see that file's own extensive 2026-09-06 incident
-        # comment for why checking `future.done()` instead is NOT safe here
-        # (an orphaned worker thread can still be touching the model's
-        # shared ConcurrentAudioDecoder state well after the awaiting
-        # coroutine appears "done").
+        # Track step completion with a threading.Event rather than the
+        # awaiting coroutine: after cancellation the worker thread can still
+        # be using the model's shared ConcurrentAudioDecoder state, so cleanup
+        # waits for the event (as in infer_raon.py).
         step_done = threading.Event()
         step_done.set()
         cue_drained_at: Optional[float] = None
@@ -334,10 +300,8 @@ class RaonSpeechChatStopClient(RealtimeClientBase):
                 pcm_bytes = _f32_frame_to_i16_bytes(decoded_audio)
                 await recorder.add(pcm_bytes)
 
-                # Live text signal -- see module docstring: diff
-                # state.sequences against the length recorded after the
-                # previous step (KRAFTON's own official demo backend does
-                # the exact same diff every frame).
+                # Live text: decode the token ids appended to state.sequences
+                # since the previous step.
                 sequences = state.sequences
                 new_token_ids = sequences[0, last_sequence_len:].tolist()
                 last_sequence_len = int(sequences.shape[1])

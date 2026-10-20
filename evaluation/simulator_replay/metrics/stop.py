@@ -18,11 +18,11 @@ DATA_ACTION = "stop"
 
 # Anchor: cue / interruption onset (t_cue_start / t_user_int_start).
 # Immediate stop rate has no success window: after the interrupt starts,
-# did the ongoing turn end. How fast is yield latency, not stop rate.
+# did the ongoing turn end. Speed is measured separately as yield latency.
 # Subsequent interval is the cue [user onset, user offset]. Gated on a
 # first stop during that interval; then no renewed competitive speech
 # before the last OVERLAP_LOOKBACK_S of the cue. Onset in that last
-# 1.0 s is take-turn-with-overlap, not a reclaim.
+# OVERLAP_LOOKBACK_S is take-turn-with-overlap, not a reclaim.
 
 DEFINITION = (
     "When an intervention requires the model to yield, it should stop its "

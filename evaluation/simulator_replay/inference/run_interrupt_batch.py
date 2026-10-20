@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/run_interrupt_batch.py
-=========================================================
-Batch driver for the `interrupt_user` Level-2 action's simulator clients
-(infer_interrupt_<model>.py). Sibling of run_action_batch.py -- deliberately
-a NEW file rather than extending run_action_batch / run_stop_batch, because
-interrupt_user cannot reuse infer_stop_<model>.py (different live driver:
-InterruptMonitorController + user_speech/branch wavs, see
-interrupt_user_common.py).
-
-Reuses run_stop_batch.py's retry/dedup/publish helpers BY IMPORT. Own
-model registry: only models that already have an infer_interrupt_<model>.py
-(currently: moshi, smoke-tested 2026-09-08). Does not import or modify
-MODEL_REGISTRY in run_stop_batch.py, and does not touch stop / hold_floor /
-respond_and_recover clients.
+Batch driver for the `interrupt_user` action's simulator clients
+(infer_interrupt_<model>.py). Separate from run_action_batch.py because
+interrupt_user uses a different live driver (InterruptMonitorController with
+user_speech/branch wavs, see interrupt_user_common.py). Retry, dedup and
+publish helpers are shared with run_stop_batch.py.
 
 Usage:
     python run_interrupt_batch.py --model moshi --workers 1
@@ -46,9 +37,9 @@ from run_stop_batch import (  # noqa: E402
     SAMPLE_TIMEOUT_OVERHEAD_S,
 )
 
-# Same budget as direct_replay/inference/run_inference.py. Interrupt
-# clients load servers/weights inside the first sample unless we warmup;
-# FLM/Raon/Moshi cold-start otherwise races the per-sample hard timeout.
+# Same budget as direct_replay/inference/run_inference.py. Local clients
+# load servers/weights in warmup() so cold start is not charged to the
+# first sample's timeout.
 WARMUP_TIMEOUT_S = 900.0
 from interrupt_user_common import (  # noqa: E402
     run_interrupt_sample_cli, POST_BRANCH_OBSERVATION_S,
@@ -87,8 +78,7 @@ class InterruptModelEntry:
     client_kwargs: dict = field(default_factory=dict)
 
 
-# Currently excluded: lychee-fd / voila / vita / mini-omni2
-# (no live interrupt driver).
+# lychee-fd, voila, vita and mini-omni2 have no interrupt_user client.
 INTERRUPT_MODEL_REGISTRY: dict[str, InterruptModelEntry] = {
     "moshi": InterruptModelEntry(
         "infer_interrupt_moshi", "InterruptMoshiClient", "API_SR", "DEFAULT_MODEL",

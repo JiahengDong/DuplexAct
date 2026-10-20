@@ -1,49 +1,27 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_raon.py
-
 KRAFTON/Raon-SpeechChat-9B client for direct replay.
 
-Architecture: Qwen3 LLM + Voxtral-Mini audio encoder + Mimi codec, i.e. the
-SAME codec family and frame geometry as Moshi (12.5 Hz, 80 ms). The model's own
-per-frame API (`raon/utils/wrapper.py`'s `RaonInferenceModel.
-duplex_decoding_step`) is an exact 1:1 frame-synchronous call: each invocation
-consumes exactly one 80 ms frame of raw PCM and returns exactly one 80 ms frame
-of output PCM, silence-coded when the model isn't speaking. Speaking/listening
-comes off `state.machine_state.phase`, not audio presence, so segmentation goes
-through `recorder.set_speaking()` the same way Moshi's does.
+Qwen3 LLM + Voxtral-Mini audio encoder + Mimi codec (12.5 Hz, 80 ms frames,
+as in Moshi). Each `duplex_decoding_step` call consumes one 80 ms PCM frame and
+returns one 80 ms output frame (silence-coded when not speaking). The speaking
+signal is `state.machine_state.phase`, not audio presence, so segments are set
+via `recorder.set_speaking()`.
 
-Live text signal: the model generates real text tokens internally every step on
-`state.sequences`, a growing tensor of ALL token ids (input + generated),
-frame-synchronized. KRAFTON's own demo backend (`demo/realtime/runtime/
-session.py`'s `RealtimeDuplexSession._decode_step`) extracts it by diffing
-`state.sequences` against the length recorded after the previous step and
-running the new ids through `_decode_text_tokens()`. The four helpers that
-needs (`_safe_int_attr`, `_encode_single_token`, `_resolve_ignored_token_ids`,
-`_decode_text_tokens`) are copied verbatim rather than imported, because
-session.py's module-level imports pull in the official demo's full serving
-stack (FastAPI, sglang) which this HF-transformers-only environment does not
-have and was never meant to.
+Live text: `state.sequences` holds all token ids so far; new ids after each
+step are decoded the same way as KRAFTON's demo backend
+(`demo/realtime/runtime/session.py`). The four text-decode helpers are copied
+from that file because importing it pulls in its serving stack (FastAPI,
+sglang). The output audio contains long stretches of padded silence, so
+`run_metrics.LIVE_TRANSCRIPT_MODELS` scores this model from these live
+transcripts (`model_speech_transcripts`) rather than ASR.
 
-Why the text matters here: Raon's `output.wav` has ~53% of the 20 ms frames
-inside its speaking segments as literally all-zero samples, so Whisper returns
-1.24 words/s against a 2.5-3.5 words/s conversational band. `run_metrics.
-LIVE_TRANSCRIPT_MODELS` therefore scores this slug off the model's own text,
-which means `model_speech_transcripts` has to exist -- the whole reason this
-client records `self.text_tokens`.
-
-KNOWN LIMITATION -- Raon runs at ~3.4x slower than realtime. Each 80 ms
-`duplex_decoding_step` costs ~270 ms of wall clock on an A100, so streaming a
-20 s input takes ~68 s. `SynchronizedRecorder`'s gap filling is wall-clock
-driven (`expected_count()` reads `loop.time() - stream_t0`), so it pads ~190 ms
-of silence per 80 ms of real audio -- which is exactly where the ~53% all-zero
-frames come from, and it means output.wav's timeline is stretched ~3.4x
-relative to input.wav's. Model text and model segments share that same
-stretched recorder clock, so bucketing text into segments stays internally
-consistent and Subsequent text is unaffected; but any comparison against
-metadata.json's user-side timestamps (pause_start, bc_start,
-side_speech_start_s), which live on input.wav's timeline, is misaligned by that
-factor. Do not read Raon's timing-dependent metrics without accounting for it.
+Limitation: the model runs several times slower than real time.
+`SynchronizedRecorder` fills gaps by wall clock, so output.wav's timeline is
+stretched relative to input.wav's. Model text and segments share that clock and
+stay consistent with each other, but comparisons against user-side timestamps
+in metadata.json (pause_start, bc_start, side_speech_start_s) are misaligned by
+the slowdown factor; account for this when reading timing metrics.
 
 Standalone usage (single sample, debugging only):
     python infer_raon.py --input_wav in.wav --output_wav out.wav \\
@@ -84,15 +62,13 @@ DEFAULT_SYSTEM_PROMPT = (
 if str(REPO_DIR / "src") not in sys.path:
     sys.path.insert(0, str(REPO_DIR / "src"))
 
-# How long to wait for an in-flight decode thread to genuinely finish before
-# touching the model's shared decoder state. See the incident note in
-# `_connect_and_stream`'s finally block.
+# How long to wait for an in-flight decode thread to finish before freeing the
+# model's shared decoder state (see `_connect_and_stream`'s finally block).
 STEP_DRAIN_TIMEOUT_S = 30.0
 
 
-# ── Text-decode helpers (copied verbatim from KRAFTON's own demo backend,
-# demo/realtime/runtime/session.py -- see module docstring for why copied
-# rather than imported) ──────────────────────────────────────────────────────
+# ── Text-decode helpers (copied from KRAFTON's demo backend,
+# demo/realtime/runtime/session.py) ──────────────────────────────────────────
 
 def _safe_int_attr(obj: Any, name: str, default: Optional[int] = None) -> Optional[int]:
     value = getattr(obj, name, None)
@@ -180,13 +156,9 @@ class RaonSpeechChatClient(RealtimeClientBase):
     MODEL_SLUG = RAON_SLUG
     OUTPUT_SR = API_SR
     INPUT_SR = API_SR
-    # 3.4x slower than realtime (see module docstring), so the default 90 s on
-    # top of input_duration cannot cover a sample. Being generous here is not
-    # just about avoiding false timeouts: the 2026-09-06 incident traced
-    # `Audio decoder worker error: <N>` to run_inference.py's outer
-    # `asyncio.wait_for` cancelling a slow sample, which orphans the decode
-    # thread onto the shared ConcurrentAudioDecoder state. Not timing out in
-    # the first place is the cheapest defence.
+    # Slower than real time, so the default overhead is too short. A timeout
+    # also orphans the decode thread on the shared ConcurrentAudioDecoder
+    # state, which breaks later samples.
     TIMEOUT_OVERHEAD_S = 600.0
 
     _model = None
@@ -229,11 +201,8 @@ class RaonSpeechChatClient(RealtimeClientBase):
 
     @classmethod
     async def warmup(cls) -> None:
-        # 2026-09-06 incident: 9B + Voxtral + Mimi load can alone exceed the
-        # per-sample budget, so sample #1 times out mid-load and the retry
-        # fires a second concurrent load into a still-initializing
-        # ConcurrentAudioDecoder -- after which every later sample dies with
-        # `Audio decoder worker error: <N>`. Load once, untimed, up front.
+        # Loading can exceed the per-sample timeout, and a retried concurrent
+        # load corrupts the ConcurrentAudioDecoder. Load once, untimed, up front.
         await asyncio.to_thread(cls._load, DEFAULT_MODEL)
 
     async def _connect_and_stream(self, input_pcm: np.ndarray, input_duration: float,
@@ -287,9 +256,8 @@ class RaonSpeechChatClient(RealtimeClientBase):
             pcm = np.concatenate([pcm, np.zeros(pad, dtype=np.int16)])
 
         await start_streaming()
-        # Manual segmentation from t=0 -- the model's own DuplexPhase, not
-        # audio presence, is its speaking signal (it emits silence-coded
-        # frames continuously), same reasoning as Moshi's recorder.
+        # Manual segmentation from t=0: DuplexPhase, not audio presence, is the
+        # speaking signal (the model emits silence-coded frames continuously).
         recorder.set_speaking(False, at_s=0.0)
 
         t0 = time.monotonic()
@@ -321,11 +289,8 @@ class RaonSpeechChatClient(RealtimeClientBase):
 
                 await recorder.add(_f32_frame_to_i16_bytes(decoded_audio))
 
-                # Live text: diff state.sequences against the length recorded
-                # after the previous step (KRAFTON's own demo backend does the
-                # exact same diff every frame). `now` is the recorder's clock,
-                # which is what model_speech_segments are on, so bucketing
-                # these into those segments needs no further alignment.
+                # Live text: decode ids added to state.sequences since the last
+                # step. `now` is on the same clock as model_speech_segments.
                 sequences = state.sequences
                 new_token_ids = sequences[0, last_sequence_len:].tolist()
                 last_sequence_len = int(sequences.shape[1])
@@ -338,21 +303,15 @@ class RaonSpeechChatClient(RealtimeClientBase):
                     self.text_tokens.append((now, text_delta))
                     event_logger.log("recv", "text_token", {"text": text_delta})
 
-                # Pace to the frame grid when the model runs faster than
-                # realtime. It currently does not (~3.4x slower, see module
-                # docstring), so this is a no-op in practice -- kept so the
-                # client stays correct rather than accidentally correct.
+                # Pace to the frame grid if the model runs faster than real time.
                 sleep_s = t0 + (i + 1) * frame_duration_s - time.monotonic()
                 if sleep_s > 0:
                     await asyncio.sleep(sleep_s)
         finally:
-            # NOT `future.done()`: an orphaned worker thread can still be
-            # inside duplex_decoding_step (pushing/pulling on the old stream
-            # id) well after the awaiting coroutine unwinds, and
-            # free_duplex_decoding_state -> destroy_stream racing it corrupts
-            # the decoder worker's `stream_states`, which then surfaces as a
-            # bogus first-frame error on the NEXT sample. Wait for the thread
-            # itself.
+            # Wait for the worker thread itself, not the awaiting coroutine: a
+            # cancelled step can still be inside duplex_decoding_step, and
+            # freeing the state concurrently corrupts the decoder's stream
+            # state for the next sample.
             if not step_done.is_set():
                 await asyncio.to_thread(step_done.wait, STEP_DRAIN_TIMEOUT_S)
             await asyncio.to_thread(model.free_duplex_decoding_state, state)

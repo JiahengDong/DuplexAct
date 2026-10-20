@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/validate_data.py
-=========================================
-Pre-flight check: scans every sample under data/<action>/<l3_dir>/ and
-flags which ones are missing the specific metadata.json timestamp fields
-that evaluation/actions/*.py actually reads for B_i/T_i (see each
-module's own "Timestamp keys read from EvalInstance.timestamps"
-docstring section -- this script mirrors those exactly, not a guess).
+Pre-flight check: scans every sample under data/<action>/<l3_dir>/ and flags
+any missing input.wav or the metadata.json timestamp fields that scoring
+needs for that action.
 
-Only checks metadata/audio-file completeness (i.e. "is this sample even
-runnable/scoreable at all") -- does NOT touch inference_info.json/asr.json,
-since those don't exist until after inference/ASR actually run.
+Only checks inputs (whether a sample is runnable and scoreable), not
+inference_info.json / asr.json, which are produced later.
 
 Usage:
     python validate_data.py                      # full report, all actions
@@ -40,8 +35,7 @@ def _duplexact_root() -> Path:
 
 DATA_ROOT = _duplexact_root() / "evaluation" / "data"
 
-# Required (non-None) metadata.json fields per (action, l3_dir), mirroring
-# build_eval_instance.py's _build_* functions exactly.
+# Required (non-None) metadata.json fields per (action, l3_dir).
 REQUIRED_FIELDS: dict[tuple[str, str], list[str]] = {
     ("wait", "inter_sentential"):  ["pause_start", "pause_end", "clip_end"],
     ("wait", "intra_sentential"):  ["pause_start", "pause_end", "clip_end"],

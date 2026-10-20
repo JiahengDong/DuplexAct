@@ -113,16 +113,12 @@ def segs_texts(r: dict):
     segs = [tuple(s) for s in inf.get("model_speech_segments") or []]
     segs = drop_moshi(segs, r["model"])
     segs = to_instance_clock(segs, r["model"], r["action"], inf)
-    # instance comes back with the rest: timing_of used to re-read and re-parse
-    # the same file for it, doubling the cost of the only slow path here.
     return segs, segment_texts(p.parent, info, segs), (info.get("instance") or {})
 
 
 # Actions with a section in this report. wait / ignore / hold_floor are scored
-# as "did the model stay quiet", a verdict with no onset to report, and have no
-# section below -- but they are 23899 of the 56892 cached rows, and without this
-# guard each one paid a full inference_info.json + asr.json + glob just to reach
-# timing_of's final `return None` and be discarded.
+# as "did the model stay quiet" and have no onset to report; skipping them early
+# avoids reading their inference files.
 TIMED_ACTIONS = {"stop", "interrupt_user", "turn_taking", "backchannel",
                  "respond_and_recover"}
 
@@ -188,11 +184,8 @@ def include_row(r: dict) -> bool:
 
 
 def stats(xs: list[float]) -> str:
-    """median (IQR, n). The spread is the interquartile range, not the mean:
-    a single pathological onset used to drag the mean far enough to flip its
-    sign against the median (grok backchannel/uncertain was median 1.28 vs
-    mean -2.51), which read as "earlier than the human" for a model that was
-    in fact later."""
+    """median (IQR, n). Median and interquartile range rather than mean, since
+    a single outlier onset can flip the mean's sign relative to the median."""
     if not xs:
         return "n/a"
     med = statistics.median(xs)
@@ -266,7 +259,7 @@ def main() -> None:
         "",
         "**Population.** Same inclusion as Immediate: full model × action only. Among **Immediate = 1**. Stop / Hold floor / Recover: speaking-at-cue (forced allowed). Interrupt: all Immediate = 1.",
         "",
-        "Each cell is **median (IQR, n)** in seconds -- the median is the headline and the interquartile range is the spread. Both are outlier-robust; an earlier revision printed the mean here, but a single pathological onset was enough to flip its sign relative to the median. `n/a` = full run but no Immediate pass with a defined diagnostic; `IQR n/a` = only one value.",
+        "Each cell is **median (IQR, n)** in seconds -- the median is the headline and the interquartile range is the spread. Both are outlier-robust. `n/a` = full run but no Immediate pass with a defined diagnostic; `IQR n/a` = only one value.",
         "",
         "| Action | Diagnostic | Definition | Who has a value |",
         "|---|---|---|---|",
@@ -304,7 +297,7 @@ def main() -> None:
         "",
         "Negative = earlier than the annotated human backchannel.",
         "",
-        "Immediate = 1 here means screened **and** function-matched, the same gate as `IMMEDIATE_V2.md`, so these are onsets of backchannels that were confirmed to be backchannels rather than every ≤3-word segment the rule caught. That drops the population from 685 to 200 and removes the truncated turn-openings, whose onsets were never backchannel onsets in the first place. Most models are now single-digit *n*: read the medians for raon, and treat the rest as anecdote.",
+        "Immediate = 1 here means screened **and** function-matched, the same gate as `IMMEDIATE.md`, so these are onsets of confirmed backchannels rather than every ≤3-word segment the rule caught. Treat single-digit *n* as anecdotal.",
         "",
         "| Model | all | affirmative | uncertain |",
         "|---|---:|---:|---:|",

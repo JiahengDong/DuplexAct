@@ -1,60 +1,29 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_bayling.py
-==============================================
-BayLing-Models/BayLing-Duplex client. Category A/B (genuine incremental
-streaming, in-process, no network server) -- unlike Voila-Autonomous, this
-model's own Python package already exposes a proper block-by-block
-streaming primitive (`BayLingDuplex.stream_audio_tokens`, a real Python
-generator that only computes block N+1 once we ask for it), so we drive it
-with real wall-clock pacing exactly like infer_minicpm_o.py's
-streaming_prefill/streaming_generate loop -- no batch call, no need to
-reconstruct segmentation post-hoc.
+BayLing-Models/BayLing-Duplex client (in-process incremental streaming).
+`BayLingDuplex.stream_audio_tokens` is a block-by-block generator, driven
+here with wall-clock pacing.
 
-Architecture (see BayLing-Models/BayLing-Duplex's duplex.py, GitHub): a
-single autoregressive LLM (GLM-4-Voice backbone) consumes user-speech
-tokens (Whisper-style VQ encoder, 12.5Hz) and assistant text/speech tokens
-as one multi-channel interleaved sequence, blocked as
-x_ratio:y_ratio:z_ratio = 10:5:10 by default (one block = 10 user-audio
-tokens = 0.8s of user audio, matched to 5 (text-token, 10-audio-token)
-generation sub-steps). Turn-taking is expressed purely via next-token
-prediction over four added special tokens ([SILENCE], <|assistant|>,
-[PAD], [EPAD]) -- no separate VAD/classifier -- so `<|assistant|>` /
-`[EPAD]` text-token events ARE the model's own real speaking-state signal,
-read directly off `DuplexStreamEvent.assistant_started` /
-`.assistant_finished` (no reconstruction needed, unlike Voila's streamer
-hack).
+Architecture: a GLM-4-Voice LLM consumes user-speech tokens (12.5Hz) and
+assistant text/speech tokens as one interleaved sequence, blocked
+x:y:z = 10:5:10 (one block = 10 user tokens = 0.8s of audio, matched to 5
+text-token + 10-audio-token sub-steps). Turn-taking is next-token prediction
+over [SILENCE], <|assistant|>, [PAD], [EPAD]; `assistant_started` /
+`assistant_finished` events are the model's speaking signal.
 
-Per-block loop: `stream_audio_tokens()` is called ONCE per sample (it's a
-generator covering the whole clip), and we pull exactly `2 * y_ratio`
-events per iteration -- one block always yields exactly that many (a
-(text, audio) pair per of the y_ratio sub-steps) unless the generator is
-exhausted, so this needs no block-index bookkeeping. Audio tokens are
-decoded to waveform immediately per sub-step via `stream_tokens_to_audio`
-(CosyVoice-style streaming flow-matching + HiFT decoder) and fed straight
-into the recorder -- genuinely incremental, not a big batch decode at the
-end.
+Each loop iteration pulls `2 * y_ratio` events (one block). Audio tokens are
+decoded per sub-step with `stream_tokens_to_audio` (flow-matching + HiFT).
 
-Trailing pad: `stream_audio_tokens`'s outer loop only iterates over
-however many user-audio tokens we hand it, so if the model hasn't reached
-[EPAD] by the time real user audio runs out, its reply would be cut off
-mid-utterance. We append INPUT_TRAILING_PAD_S of silence to the input clip
-before tokenizing (same fix, same rationale, as infer_voila.py) so the
-model keeps "listening" (to silence) long enough to finish speaking.
+The generator only runs over the user tokens it is given, so
+INPUT_TRAILING_PAD_S of silence is appended to let the model finish its reply.
 
-Vocoder pacing: CosyVoice/HiFT decode is slower than realtime (~0.4 s of
-audio every ~1.3 s). The default recorder would write that GPU delay as
-silence inside one `<|assistant|>`…`[EPAD]` turn (F-05 + post-target pad),
-so output.wav is chopped, Whisper ASR fragments or drops the sentence, and
-listen Subsequent (Wait / Backchannel / Take turn / Ignore) judges
-"no speech" or "incoherent". CONTIGUOUS_WHILE_SPEAKING writes one turn's
-chunks back-to-back; Immediate onset is still `<|assistant|>` on the
-recorder clock. Trigger text in the simulator is live tokens, not ASR.
+The vocoder is slower than real time; CONTIGUOUS_WHILE_SPEAKING writes one
+turn's chunks back-to-back so decode delay does not appear as silence inside
+the turn. Response onset is still the `<|assistant|>` time on the recorder
+clock.
 
-max_epad_count=1 (the library's own default): generation stops as soon as
-the model completes ONE assistant utterance -- matches this benchmark's
-per-instance expectation of at most one model turn per sample, same as
-every other direct-replay client.
+max_epad_count=1 (library default): generation stops after one assistant
+utterance.
 
 Standalone usage (single sample, for debugging):
     python infer_bayling.py --input_wav path/to/input.wav \\
@@ -116,7 +85,7 @@ class BayLingDuplexClient(RealtimeClientBase):
     INPUT_SR   = INPUT_SR
     CONTIGUOUS_WHILE_SPEAKING = True
 
-    _bd = None   # BayLingDuplex singleton (loaded once per job)
+    _bd = None   # BayLingDuplex singleton (loaded once per process)
     _model_name_loaded: Optional[str] = None
 
     @classmethod
@@ -127,13 +96,8 @@ class BayLingDuplexClient(RealtimeClientBase):
         from huggingface_hub import snapshot_download
         from bayling_duplex.duplex import BayLingDuplex
 
-        # decoder_path is NOT resolved through transformers' from_pretrained()
-        # machinery like model_path/speech_tokenizer_path are -- AudioDecoder
-        # (flow_inference.py) does a plain open(config_path)/torch.load(...)
-        # on literal "<decoder_path>/config.yaml", "/flow.pt", "/hift.pt", so
-        # it needs an actual local directory, not a bare HF repo id. Resolve
-        # it to its on-disk snapshot dir ourselves first (same pattern as
-        # infer_freeze_omni.py / infer_vita15.py).
+        # AudioDecoder opens <decoder_path>/config.yaml, flow.pt, hift.pt
+        # directly, so decoder_path must be a local directory, not an HF repo id.
         decoder_local_dir = snapshot_download(DECODER_MODEL)
 
         cls._bd = BayLingDuplex(
@@ -173,9 +137,7 @@ class BayLingDuplexClient(RealtimeClientBase):
         block_duration_s = bd.x_ratio / 12.5   # 0.8s for the default 10:5:10 ratio
 
         await start_streaming()
-        # Manual segmentation from t=0 -- <|assistant|>/[EPAD] text-token
-        # events (not audio presence) are the model's own speaking signal,
-        # same reasoning as Moshi's continuous-signal recorder.
+        # Segmentation follows <|assistant|>/[EPAD] events, not audio presence.
         recorder.set_speaking(False, at_s=0.0)
 
         stream_id = str(uuid.uuid4())

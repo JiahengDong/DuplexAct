@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_qwen_realtime.py
-
-Qwen3.5-Omni-Flash-Realtime interrupt_user client. Thin subclass of
-realtime_api_interrupt_common -- same session.update / websocket_url as
-infer_stop_qwen_realtime.py. Never edits the stop client or the
-direct_replay qwen client.
+Qwen3.5-Omni-Flash-Realtime client for the simulator-driven `interrupt_user`
+action. Thin subclass of realtime_api_interrupt_common, with the same
+session.update / websocket_url as infer_stop_qwen_realtime.py.
 """
 from __future__ import annotations
 

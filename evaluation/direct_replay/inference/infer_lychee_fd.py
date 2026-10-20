@@ -1,129 +1,39 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_lychee_fd.py
-==========================================
-HITsz-TMG/Lychee-FD client. Category A/B (genuine incremental streaming,
-in-process, no network server) -- upgraded from an earlier Category C
-(single batch call) implementation once investigation confirmed the
-official release's `app.py` ships a real, working live/incremental driver
-(the same one its own browser demo and `scripts/start_realtime_all.sh` use),
-not just a Gradio "upload one file" batch path. See §2 of
-`model_docs/opensource/lychee-fd.md` for the full history of why the batch
-fallback was chosen first and what changed.
+HIT-TMG/Lychee-FD client: in-process incremental streaming (no network server).
 
-How this differs from the old batch-call client: instead of one call to
-`app.run_chunk_dialogue_inference(..., stream_session=None)` over the whole
-clip at GPU speed, this client reproduces the CORE of `app.py`'s own
-`_run_realtime_session_worker()` round loop (the function its live
-SSE/browser session handler runs) -- minus the multi-user/SSE/locking
-scaffolding we don't need for a single offline sample:
+Reproduces the core round loop of the official `app.py`
+(`_run_realtime_session_worker()`), without its multi-user/SSE scaffolding:
 
-  1. Create ONE incremental stream session up front via the loaded
-     generator's own `create_hf_incremental_stream_session()` (HF backend
-     only -- we never load the vLLM backend, see infer_lychee_fd.py's
-     sibling model_docs entry) and ONE persistent-mode `RealtimeTTSPool`
-     (`persistent_mode=True`, no `pcm_emit_callback` needed since we drain
-     `audio_out` straight from the generator's own yielded tuples, exactly
-     like the old batch client already did -- app.py's own for-loop over
-     `inference_gen` does the same thing regardless of tts_bridge mode).
-  2. Feed `input_pcm` in sequential, REAL-wall-clock-paced windows
-     (`INFER_WINDOW_MS`, matching `app.py`'s own
-     `LYCHEEFD_REALTIME_INFER_WINDOW_MS` default of 400ms) -- each round's
-     `run_chunk_dialogue_inference(..., stream_session=session,
-     stream_audio_incremental=True, tts_bridge=<persistent pool>)` call is
-     only dispatched once that much real time has genuinely elapsed since
-     stream start, so response latency now measures real wall-clock time
-     (unlike Voila-Autonomous, whose only entry point has no such pacing
-     option at all -- see voila-autonomous.md).
-  3. Carry model state across rounds via `round_ctx["next_prefix"]` /
-     `round_ctx["next_listening_state"]` -- the exact mechanism app.py's own
-     loop uses (`session.realtime_prefix` / `session.realtime_listening_state`
-     in app.py, just held as plain local variables here since we only ever
-     run one session per sample, never concurrently).
-  4. Close the stream session (`app._close_incremental_stream_session`) and
-     stop the TTS pool (`tts_bridge.stop(force_flush=False)`) once all of
-     input_pcm (including its own trailing padding) has been fed and the
-     final round (`stream_flush_audio_tail=True`) returns -- matching this
-     benchmark's hard-cutoff-at-input_duration policy shared by every other
-     client (see realtime_common.py's module docstring).
+  1. Create one incremental stream session on `app.generator` and one
+     persistent-mode `RealtimeTTSPool`. Output audio is drained from the
+     tuples yielded by `run_chunk_dialogue_inference()`.
+  2. Feed `input_pcm` in `INFER_WINDOW_MS` windows (400 ms, the official
+     default), dispatching each round only once that much wall-clock time has
+     elapsed since stream start, so latency is measured in real time.
+  3. Carry model state across rounds via `round_ctx["next_prefix"]` and
+     `round_ctx["next_listening_state"]`.
+  4. After the last window (`stream_flush_audio_tail=True`), close the session
+     and stop the TTS pool (hard cutoff at `input_duration`, as in every client;
+     see `realtime_common.py`).
 
-`model_speech_segments` still comes from the native `round_trace["events"]`
-signal, exactly as the old batch client used it -- fed into the recorder via
-`recorder.set_speaking(True/False, at_s=...)` per event (each event's
-`start_rel_ms`/`end_rel_ms` converted to absolute sample-timeline seconds by
-adding that round's own real wall-clock dispatch offset). We follow the
-official pipeline's own behavior here as-is, including a known wart: traced
-through `hf_v9_realtime.py`/app.py and found that the per-round "currently
-open speaking event" bookkeeping (`current_event_trace`) is a plain
-function-local variable, reset to `None` at the top of EVERY
-`run_chunk_dialogue_inference()` call -- it is NOT part of what
-`next_prefix`/`next_listening_state` carry forward across rounds (only the
-raw LLM token prefix and the coarse l/s/b state are). There IS a
-`keep_alive_for_speaking` mechanism that looks purpose-built to solve
-exactly this continuity problem, but grep confirms it only exists in
-`vllm_generation.py` (the vLLM backend) -- `hf_v9_realtime.py` (the HF
-backend this client, and the official release's own default non-vLLM
-deployment path, both actually drive) has no equivalent. Concretely: this
-means a reply that keeps speaking across one of our 400ms round boundaries
-(likely, since replies routinely run several seconds) can be recorded as a
-new event starting at ~0ms into the next round rather than a continuation
-of the previous one -- i.e. this is a genuine limitation of the model's own
-official HF-backend round-based session design, not something introduced
-by this client. We deliberately do NOT layer our own cross-round stitching
-heuristic on top to "fix" this, since that would deviate from how the
-official pipeline itself behaves; any fragmentation this produces is
-Lychee-FD's own official behavior under its own official incremental API,
-faithfully reproduced.
+`model_speech_segments` come from the native `round_trace["events"]`: each
+event's `start_rel_ms`/`end_rel_ms` is shifted by its round's dispatch offset
+and passed to `recorder.set_speaking()`.
 
-## 11. vLLM backend (default, upgraded from the HF backend)
+Backends (selected by `LYCHEEFD_USE_VLLM`, default `1`):
+  - vLLM (default): `create_incremental_stream_session()` keeps the same vLLM
+    request alive across consecutive speaking rounds
+    (`keep_alive_for_speaking=True`), so one reply stays one event.
+  - HF: the open speaking event is reset at the start of every round, so a
+    reply spanning a 400 ms round boundary can be recorded as several events.
+    This is the official HF-backend behavior and is not stitched here.
 
-The public repo frames the Docker+vLLM pipeline (`lychee_fd.vllm_integration.
-engine`, `lychee_fd.runtime.vllm_generation.VLLMGenerationFramework`) as its
-own "recommended production path" (`model_docs/opensource/lychee-fd.md` §1);
-we now drive that path directly (no Docker/container involved -- same
-in-process approach as the HF backend, just a different `app.load_models()`
-branch, selected purely via `LYCHEEFD_USE_VLLM=1`, both backends' `load_models`
-call signature is identical, see `app.py`'s own `load_models()`).
-
-Two concrete things this gets us over the HF backend (§2/§3's documented
-limitation): `VLLMGenerationFramework.create_incremental_stream_session()`
-(vllm_generation.py) sets `keep_alive_for_speaking=True` on its session,
-reusing the same vLLM *request* across consecutive speaking-decode calls
-within one open utterance -- unlike `create_hf_incremental_stream_session()`
-(available on BOTH backends, for HF-compatible semantics; that's what this
-client used to call unconditionally), which never reuses a request and is
-therefore the actual cause of the cross-round event-fragmentation wart
-documented in lychee-fd.md §2. `_setup_session()` below now calls whichever
-of the two `app.generator` actually exposes preferring the native one --
-copying `app.py`'s own dispatch order verbatim (see its
-`_run_realtime_session_worker()`) rather than hardcoding one name.
-
-Setup this requires that the HF backend didn't: `VLLMGenerationFramework`
-imports `vllm.model_executor.models.registry.ModelRegistry`/`SamplingParams`/
-etc. and, critically, `MultiHeadRequestState` -- a class that exists ONLY in
-the repo's own patched vLLM fork (`third_party/vllm/vllm/sequence.py`), not
-in vanilla pip `vllm==0.6.5` (confirmed by direct import test). Per the
-repo's own README: "The online vLLM backend requires two pieces at the same
-time: an installed vLLM wheel ... which provides compiled native libraries
-... _C.abi3.so, _moe_C.abi3.so, vllm_flash_attn_c.abi3.so; the patched source
-tree in third_party/vllm, which implements the Lychee-FD multi-stream
-serving path... importing plain site-packages vLLM will not use the
-Lychee-FD serving implementation." We therefore (one-time, already done for
-this venv): (1) `pip install vllm==0.6.5` into `opensource_models/lychee-fd/
-venv` (reuses the venv's existing `torch==2.5.1+cu121`, unchanged) purely as
-a source of compiled native artifacts; (2) copied those artifacts
-(`_C.abi3.so`, `_moe_C.abi3.so`, the whole `vllm_flash_attn/` dir,
-`_version.py`) from the venv's installed `vllm/` package into `third_party/
-vllm/vllm/` (the exact copy `scripts/start_backend.sh`'s own
-`sync_vllm_native_artifacts()` performs); (3) prepend `VLLM_SOURCE_DIR`
-(`third_party/vllm`) to `sys.path` here, before the pip-installed copy can
-ever be imported -- confirmed via `import vllm; vllm.MultiHeadRequestState`
-resolving correctly with this ordering. All of this -- checkpoints, venv,
-and the patched vllm source tree -- lives under `opensource_models/lychee-fd/`, like every other
-model's large storage.
-
-Set `LYCHEEFD_USE_VLLM=0` to fall back to the previously-smoke-tested HF backend
-(§2-§9 above) if the vLLM path turns out to need further fixes.
+The vLLM backend needs the upstream repo's patched vLLM fork
+(`third_party/vllm`, which provides `MultiHeadRequestState`) ahead of the
+pip-installed `vllm==0.6.5` on `sys.path`, with the wheel's compiled native
+artifacts (`_C.abi3.so`, `_moe_C.abi3.so`, `vllm_flash_attn/`, `_version.py`)
+copied into it, as the upstream `scripts/start_backend.sh` does.
 
 Standalone usage (single sample, for debugging):
     python infer_lychee_fd.py --input_wav path/to/input.wav \\
@@ -161,62 +71,37 @@ DEFAULT_PROMPT_VOICE = "default_male"
 INPUT_SR  = 16_000   # app.py's INPUT_SAMPLE_RATE
 OUTPUT_SR = 24_000   # app.py's TTS_SAMPLE_RATE (Token2Wav vocoder output rate)
 
-# Matches app.py's own LYCHEEFD_REALTIME_INFER_WINDOW_MS default -- the exact
-# per-round window size the authors' own live browser session uses.
+# Per-round window size; matches app.py's LYCHEEFD_REALTIME_INFER_WINDOW_MS default.
 INFER_WINDOW_MS = int(os.environ.get("LYCHEEFD_REALTIME_INFER_WINDOW_MS", "400"))
 
 REPO_DIR = opensource_root_for(LYCHEE_FD_SLUG) / "repo"
 STEPAUDIO2_SOURCE_DIR = REPO_DIR / "third_party" / "Step-Audio2"
-VLLM_SOURCE_DIR = REPO_DIR / "third_party" / "vllm"     # patched vLLM fork -- see §11 below
+VLLM_SOURCE_DIR = REPO_DIR / "third_party" / "vllm"     # patched vLLM fork
 CKPT_ROOT = opensource_root_for(LYCHEE_FD_SLUG) / "checkpoints" / "model_root"
 MODEL_PATH = CKPT_ROOT / "lychee_full_duplex"
 TOKEN2WAV_PATH = CKPT_ROOT / "token2wav"
 
 os.environ.setdefault("STEPAUDIO2_SOURCE_DIR", str(STEPAUDIO2_SOURCE_DIR))
-# vLLM backend -- the repo's own "recommended production path" (see module
-# docstring §11) and now our default: gives native `keep_alive_for_speaking`
-# (fixes the HF backend's cross-round event-fragmentation limitation, see
-# lychee-fd.md §2) plus a real PagedAttention KV cache instead of HF's
-# `transformers`-generic one. Requires the patched `third_party/vllm`
-# fork's Python source ahead of the pip-installed vanilla `vllm==0.6.5` on
-# sys.path (below) -- importing plain site-packages vllm would silently
-# miss `MultiHeadRequestState`/`multihead_sampling` and this whole backend
-# would refuse to construct a request. Set LYCHEEFD_USE_VLLM=0 to fall back
-# to the HF backend (§2's Category-C-safe path) for debugging.
+# vLLM backend by default (see module docstring); set LYCHEEFD_USE_VLLM=0 for
+# the HF backend.
 os.environ.setdefault("LYCHEEFD_USE_VLLM", "1")
 os.environ.setdefault("LYCHEEFD_T2W_REMOTE_ENABLED", "0")  # load Token2Wav in-process
 os.environ.setdefault("LYCHEEFD_STARTUP_WARMUP", "0")     # we warm up on first real sample instead
-# vLLM engine tuning -- conservative defaults for a single A100 80GB, no
-# tensor/pipeline parallelism needed for one ~24GB checkpoint. enforce_eager
-# stays at the module's own default (True) to skip CUDA-graph capture
-# (slower per-step, but avoids graph-capture edge cases with the custom
-# multi-branch model architecture -- not something we've stress-tested).
+# vLLM engine settings for a single 80GB GPU (one ~24GB checkpoint, no
+# tensor/pipeline parallelism). enforce_eager keeps its upstream default (True).
 os.environ.setdefault("LYCHEEFD_VLLM_GPU_MEMORY_UTILIZATION", "0.85")
 os.environ.setdefault("LYCHEEFD_VLLM_MAX_MODEL_LEN", "8192")
-# Official, opt-in flag (see vllm_generation.py's `_close_incremental_stream_
-# session`-equivalent cleanup path) that calls `torch.cuda.empty_cache()` +
-# `ipc_collect()` after each session's own gc.collect(). Defaults to "0"
-# upstream because a live multi-user server closing/reopening sessions
-# constantly shouldn't pay that sync cost per-request. We're the opposite
-# case: one long-lived process runs HUNDREDS of sequential offline samples
-# back-to-back (see run_lychee_fd_vllm_validation.sh), and non-vLLM-pool
-# Python-side tensors (audio feature/embed caches, HF-path KV cache refs --
-# see the attrs this same cleanup routine nulls out just above the gc.collect
-# call) only actually return their CUDA blocks to the driver once this flag
-# is on; left off, we saw allocated memory climb sample-over-sample (49GB ->
-# 79GB over ~30 samples) until a real OutOfMemoryError. Turning this on
-# doesn't touch model weights/behavior/outputs at all -- purely a device
-# memory bookkeeping call -- so it's a zero-bias, official-mechanism fix.
+# Upstream opt-in flag: call torch.cuda.empty_cache() + ipc_collect() when a
+# session closes. One process runs many samples back-to-back, and without this
+# per-session tensors are not returned to the driver and GPU memory grows until
+# OOM. It does not affect model outputs.
 os.environ.setdefault("LYCHEEFD_CUDA_EMPTY_CACHE_ON_SESSION_CLOSE", "1")
 
 USE_VLLM = os.environ.get("LYCHEEFD_USE_VLLM", "1") == "1"
 
 if USE_VLLM:
-    # Must be inserted BEFORE any `import vllm` happens (including
-    # transitively, e.g. via `lychee_fd.app` -> `vllm_generation.py`) --
-    # Python caches modules by name on first import, so if plain
-    # site-packages vllm gets imported first, the patched tree is never
-    # consulted for the rest of the process.
+    # Must precede any (including transitive) `import vllm`, otherwise the
+    # site-packages copy is cached and the patched tree is never used.
     if str(VLLM_SOURCE_DIR) not in sys.path:
         sys.path.insert(0, str(VLLM_SOURCE_DIR))
 if str(REPO_DIR) not in sys.path:
@@ -226,18 +111,13 @@ if str(STEPAUDIO2_SOURCE_DIR) not in sys.path:
 
 
 def _extract_events_from_round_trace(round_trace: dict, round_offset_s: float) -> list[dict]:
-    """
+    """Convert one round's closed events onto the sample timeline.
+
     round_trace["events"] entries look like {"kind": "response",
-    "start_rel_ms": ..., "end_rel_ms": ...}, relative to THIS round's own
-    call start (`t_stream_start_perf`, a real `time.perf_counter()` read
-    taken fresh at the top of every `run_chunk_dialogue_inference()` call).
-    `round_offset_s` is this round's real wall-clock dispatch time relative
-    to the sample's own stream start (the same origin `recorder`/
-    `event_logger` use), so adding it converts each event onto the sample's
-    single absolute timeline. These fully-closed (start AND end present)
-    events become `recorder.set_speaking()` calls -- see module docstring
-    for the official-pipeline HF-backend caveat about events that span a
-    round boundary.
+    "start_rel_ms": ..., "end_rel_ms": ...}, relative to the start of that
+    `run_chunk_dialogue_inference()` call. `round_offset_s` is the round's
+    dispatch time relative to stream start (the origin `recorder` and
+    `event_logger` use). Events missing a start or end are skipped.
     """
     out: list[dict] = []
     for ev in round_trace.get("events", []) or []:
@@ -263,19 +143,9 @@ class LycheeFDClient(RealtimeClientBase):
 
     _app = None
     _loaded_model_path: Optional[str] = None
-    # The official release only ever calls `app.load_models()` once, single-
-    # threaded, before its server starts accepting requests (see app.py's
-    # `__main__` block: `load_models(...)` runs to completion, THEN the
-    # FastAPI/Gradio app starts serving). We replicate that exact single-
-    # load guarantee here for our own concurrent (`--workers N`) driver:
-    # without this lock, two worker threads can both observe `cls._app is
-    # None` and both call `app.load_models(...)` concurrently, racing to
-    # construct the same vLLM engine/register the same custom layers twice
-    # in one process -- this is what caused the "Duplicate layer name" /
-    # KeyError(".model.layers.N.self_attn.attn") failures in the first
-    # validation batch, NOT a bug in the model or the official code itself.
-    # Serializing this is pure client-side concurrency control -- it changes
-    # nothing about how the model is loaded or how it behaves once loaded.
+    # `app.load_models()` must run once per process. With `--workers N`,
+    # concurrent loads would build the vLLM engine twice and fail with
+    # "Duplicate layer name" errors, so loading is serialized.
     _load_lock = threading.Lock()
 
     @classmethod
@@ -294,15 +164,8 @@ class LycheeFDClient(RealtimeClientBase):
     def _load_locked(cls):
         import lychee_fd.app as app  # noqa: F401  (module-level import triggers app.py's own setup)
 
-        # StepAudio2ForCausalLM (the checkpoint's own bundled modeling class,
-        # loaded via the lychee_fd.models.lychee_duplex shim -- see that
-        # file's docstring) doesn't implement an sdpa attention path at all
-        # ("does not support an attention implementation through
-        # torch.nn.functional.scaled_dot_product_attention yet"), unlike
-        # Voila/MiniCPM-o/VITA-1.5 where sdpa was available and chosen only
-        # to dodge a from-source flash-attn compile. "eager" is the only
-        # option this specific architecture supports in this transformers
-        # version.
+        # StepAudio2ForCausalLM has no sdpa attention path, so "eager" is the
+        # only supported attention implementation.
         status = app.load_models(str(MODEL_PATH), str(TOKEN2WAV_PATH), attn_impl="eager")
         for line in status.splitlines():
             if line.strip():
@@ -327,10 +190,8 @@ class LycheeFDClient(RealtimeClientBase):
                 worker_name="lychee_fd_replay_tts",
                 persistent_mode=True,   # kept alive across every round of this sample
             )
-            # Prefer the native/generic session (keep_alive_for_speaking-
-            # capable when the backend supports it, see module docstring
-            # §11) over the HF-compatibility-shim name -- exact dispatch
-            # order app.py's own `_run_realtime_session_worker()` uses.
+            # Prefer the native session (supports keep_alive_for_speaking on
+            # vLLM) over the HF-compatible one, in the same order as app.py.
             session_kwargs = dict(
                 prefix=None,
                 initial_listening_state="l",
@@ -354,18 +215,10 @@ class LycheeFDClient(RealtimeClientBase):
         t0 = await start_streaming()
         loop = asyncio.get_event_loop()
 
-        # Force manual-segment mode from t=0, before any audio is added.
-        # Without this, SynchronizedRecorder's own automatic (queue-presence)
-        # tracking would run for however many early rounds pass before the
-        # FIRST native round_trace event actually closes (see module
-        # docstring -- closing can lag several rounds behind a real speech
-        # onset), auto-opening a segment on real audio presence; the first
-        # set_speaking() call below would then permanently switch to manual
-        # mode mid-flight and abandon that auto-opened segment (it only ever
-        # gets closed, incorrectly spanning to end-of-recording, by run()'s
-        # unconditional final _close_open_segment() call). This no-op call
-        # (nothing is open yet, so it appends nothing) just flips
-        # `_manual_segments` on early so the two mechanisms never overlap.
+        # Switch the recorder to manual segments before any audio arrives.
+        # Native events can close several rounds after speech onset; without
+        # this, automatic tracking would open a segment first and it would be
+        # left open until end of recording.
         recorder.set_speaking(False, at_s=0.0)
 
         round_prefix: Optional[dict] = None
@@ -379,10 +232,8 @@ class LycheeFDClient(RealtimeClientBase):
                 next_idx = min(idx + window_samples, total_samples)
                 is_last_round = next_idx >= total_samples
 
-                # Pace DISPATCH to real wall-clock time: only call the model
-                # with this round's slice once that much of input.wav's own
-                # timeline has genuinely elapsed -- otherwise we're back to
-                # gulping audio faster than it was "spoken" (Voila's problem).
+                # Dispatch each window only once its audio has elapsed in
+                # wall-clock time.
                 deadline = t0 + (next_idx / INPUT_SR)
                 await sleep_until_deadline(loop, deadline)
 

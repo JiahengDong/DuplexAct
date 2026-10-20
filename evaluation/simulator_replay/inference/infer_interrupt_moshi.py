@@ -1,28 +1,20 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_moshi.py
-===========================================================
-Moshi client for the `interrupt_user` Level-2 action, simulator-driven --
-see interrupt_controller.py's module docstring for the full architecture
-rationale (roles reversed vs stop/hold_floor/respond_and_recover: WE play
-`user_speech.wav` continuously, and watch for the MODEL to barge in).
+Moshi client for the simulator-driven `interrupt_user` action (see
+interrupt_controller.py). Roles are reversed relative to stop/hold_floor/
+respond_and_recover: the simulator plays `user_speech.wav` continuously and
+watches for the model to barge in.
 
-Reuses common/realtime_common.py's RealtimeClientBase /
-SynchronizedRecorder / EventLogger / DynamicPCMSource and
-local_common.py's LocalServerManager exactly as infer_stop_moshi.py does
-(same Moshi server, same wire protocol). Deliberately a SEPARATE module
-from infer_stop_moshi.py (not a subclass/edit) -- same "always additive,
-never touch the validated path" rule used throughout this project. The
-ONLY real differences from infer_stop_moshi.py's own `_connect_and_stream`:
+Uses the same Moshi server and wire protocol as infer_stop_moshi.py. The
+differences from infer_stop_moshi.py's `_connect_and_stream`:
   1. `source`'s initial content is `user_speech.wav`, not `lead_in.wav`.
-  2. The concurrent controller is InterruptMonitorController (LLM-judged
-     user-stop; interrupt_user only -- does not touch LiveTriggerController).
-  3. `simulator_speech_segments` has an entry for user_speech (whose own
-     `end` is the REAL truncation point, not a fixed a-priori length) and
-     one for whichever branch clip got selected live.
+  2. The concurrent controller is InterruptMonitorController.
+  3. `simulator_speech_segments` has an entry for user_speech (whose `end`
+     is the actual truncation point) and one for the branch clip selected
+     live.
 
-Standalone usage (single sample, for the initial smoke test):
-    python infer_interrupt_moshi.py --sample_dir <path to synth_interrupt_for_help_0000 etc> \\
+Standalone usage (single sample):
+    python infer_interrupt_moshi.py --sample_dir <path to an interrupt_user sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -58,7 +50,7 @@ from realtime_common import (  # noqa: E402
 )
 from interrupt_controller import InterruptMonitorController  # noqa: E402
 from interrupt_user_common import interrupt_cli_main, POST_BRANCH_OBSERVATION_S  # noqa: E402
-from trigger_controller import poll_interval_for_native_chunk  # noqa: E402  read-only
+from trigger_controller import poll_interval_for_native_chunk  # noqa: E402
 
 MOSHI_SLUG = "moshi"
 MOSHI_HOST = "localhost"
@@ -70,7 +62,7 @@ FRAME_SAMPLES = 1_920          # 80ms @ 24kHz -- Mimi's native frame size
 FRAME_SEC     = FRAME_SAMPLES / API_SR
 FRAME_BYTES   = FRAME_SAMPLES * 2   # int16
 
-MOSHI_SILENCE_GRACE_S = 0.8    # same calibration as infer_stop_moshi.py
+MOSHI_SILENCE_GRACE_S = 0.8    # same value as infer_stop_moshi.py
 MOSHI_POLL_INTERVAL_S = poll_interval_for_native_chunk(FRAME_SEC)  # 1.0s unified user-side poll
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
@@ -95,7 +87,7 @@ class InterruptMoshiClient(RealtimeClientBase):
         self.llm_client = llm_client
         self.monitor_result: dict = {}             # populated by _connect_and_stream
         self.text_tokens: list[tuple[float, str]] = []   # (t, word/punct) as received
-        self.simulator_speech_segments: list[dict] = []   # what WE played and when
+        self.simulator_speech_segments: list[dict] = []   # what the simulator played and when
 
     async def _connect_and_stream(self, input_pcm: np.ndarray, input_duration: float,
                                    recorder: SynchronizedRecorder, event_logger: EventLogger,
@@ -171,8 +163,8 @@ class InterruptMoshiClient(RealtimeClientBase):
 
             recv_task = asyncio.create_task(receive_loop())
 
-            # Manual segmentation from t=0, same rationale as infer_stop_moshi.py
-            # (avoid a spurious false-positive segment during priming audio).
+            # Manual segmentation from t=0, so priming audio is never
+            # registered as a speech segment.
             recorder.set_speaking(False, at_s=0.0)
 
             await start_streaming()
@@ -199,12 +191,9 @@ class InterruptMoshiClient(RealtimeClientBase):
             monitor_task = asyncio.create_task(monitor.run())
 
             def _on_monitor_done(t) -> None:
-                # One-shot for `interrupt_user`: once the controller has
-                # appended whichever branch was selected, mark the source
-                # finished so the sender loop below knows no MORE real
-                # content is coming -- pull() still returns silence
-                # forever afterward, is_done just becomes the signal to
-                # start counting down POST_BRANCH_OBSERVATION_S.
+                # Once the selected branch is appended, mark the source
+                # finished; pull() keeps returning silence and is_done starts
+                # the POST_BRANCH_OBSERVATION_S countdown.
                 source.finish()
 
             monitor_task.add_done_callback(_on_monitor_done)
@@ -239,12 +228,9 @@ class InterruptMoshiClient(RealtimeClientBase):
                     except Exception as e:
                         self.monitor_result = {"error": f"{type(e).__name__}: {e}"}
 
-                # Simulator-side timeline -- mirrors infer_stop_moshi.py's own
-                # construction, but the user_speech segment's `end` is the
-                # REAL truncation point (input_duration if never interrupted
-                # i.e. IGNORED outcome, else wherever truncate_pending() cut
-                # it off), not a fixed a-priori length -- that distinction IS
-                # what this action tests.
+                # Simulator-side timeline. The user_speech segment ends at the
+                # actual truncation point: input_duration if the model never
+                # barged in, else where truncate_pending() cut it off.
                 t_onset = self.monitor_result.get("t_model_onset_detected")
                 t_user_speech_end = t_onset if t_onset is not None else input_duration
                 self.simulator_speech_segments = [

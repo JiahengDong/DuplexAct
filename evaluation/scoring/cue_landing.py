@@ -43,17 +43,17 @@ def sim_root(model: str) -> Path:
 
 
 def report_out(path: Path) -> Path:
-    """Insert $REPORT_SUFFIX before the extension, so a re-scored run can be
-    written alongside a committed report instead of replacing it."""
+    """Insert $REPORT_SUFFIX before the extension, so a separate scoring run
+    can be written alongside an existing report instead of replacing it."""
     sfx = os.environ.get("REPORT_SUFFIX", "")
     return path.with_name(f"{path.stem}{sfx}{path.suffix}") if sfx else path
 
 
 def report_scope() -> Optional[set[tuple[str, str]]]:
     """(model, action) pairs the report may show, from the $REPORT_SCOPE manifest,
-    or None when unset (show everything). Pairs outside the scope are withheld
-    rather than dropped, so a table never mixes re-run and pre-fix numbers and
-    still names what is outstanding."""
+    or None when unset (show everything). The manifest lists `waves`, each with
+    an `action` and its `models`. Pairs outside the scope are shown as withheld
+    rather than dropped, so a table still names what is missing."""
     src = os.environ.get("REPORT_SCOPE", "")
     if not src:
         return None
@@ -74,11 +74,9 @@ def n_error_samples(model: str, action: str) -> int:
     """Samples whose inference_info.json carries a non-empty `errors` list.
 
     run_metrics.score_one drops these instead of scoring a transport failure
-    as a model that stayed silent, so they are legitimately missing from the
-    cache and must not be charged against completeness. Transient failures
-    (403, 1011, keepalive timeout) should be re-run to zero; what is expected
-    to survive here is the permanent kind, e.g. a provider refusing the turn
-    outright on content policy."""
+    as silence, so they are missing from the cache and are not counted
+    against completeness. Transient failures should be retried; persistent
+    ones (e.g. a provider refusing the turn on content policy) remain."""
     if action in DR_ACTIONS:
         paths = dr_root(model).glob(f"{action}/*/{model}/*/inference_info.json")
     else:
@@ -94,10 +92,8 @@ def n_error_samples(model: str, action: str) -> int:
     return n
 
 
-# Errored samples we will forgive when deciding completeness. Bounded on
-# purpose: subtracting an unbounded error count would invert the gate, letting
-# a model that failed almost every sample pass more easily than one that missed
-# a handful, and publishing a cell computed over the few samples that survived.
+# Errored samples allowed when deciding completeness. Bounded so that a model
+# failing most samples cannot pass with a cell computed over the few left.
 MAX_FORGIVEN_ERRORS = 5
 
 
@@ -106,12 +102,11 @@ def cache_complete(model: str, action: str, n: int) -> bool:
     if exp is None:
         return False
     n_err = n_error_samples(model, action)
-    # Upper bound covers a cache written before score_one started dropping
-    # errored samples (it still holds an unscorable entry per failure); lower
-    # bound covers one written after.
+    # The cache may or may not still hold an entry per errored sample, so
+    # accept anything from exp - n_err to exp.
     if n_err <= MAX_FORGIVEN_ERRORS and exp - n_err <= n <= exp:
         return True
-    # raon-speechchat hold_floor is 887/891; show the cell.
+    # Open-source models may miss up to 5 samples and still be shown.
     if model in OSS_MODELS and n >= exp - 5:
         return True
     return False

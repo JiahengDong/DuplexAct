@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_flm_audio.py
-==============================================================
-FLM-Audio client for `interrupt_user`. Separate from infer_stop_flm_audio.py
-(never edited). Same Moshi-twin wire protocol + sphn==0.1.4 drain loops as
-the stop client; InterruptMonitorController instead of LiveTriggerController.
+FLM-Audio client for the `interrupt_user` action. Uses the same Moshi-style
+wire protocol and sphn==0.1.4 drain loops as infer_stop_flm_audio.py, driven
+by InterruptMonitorController instead of LiveTriggerController.
 """
 from __future__ import annotations
 

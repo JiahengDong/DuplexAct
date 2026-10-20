@@ -1,69 +1,22 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_bayling.py
+BayLing-Models/BayLing-Duplex client for simulator replay, with the user's
+interruption injected live by the LLM-driven trigger (see trigger_controller.py).
 
-BayLing-Models/BayLing-Duplex client for the `stop` Level-2 action,
-simulator-driven (live LLM-triggered injection -- see
-trigger_controller.py's module docstring for the full architecture
-rationale).
+BayLing-Duplex consumes user audio tokens rather than PCM.
+`BayLingDuplex.stream_audio_tokens()` processes tokens block by block and keeps
+its KV cache and counters on a `DuplexStreamState`, so calling it again with the
+same `state` continues generation. This client feeds one block (x_ratio=10
+tokens = 0.8 s of user audio) per call, pulled from a `DynamicTokenSource`
+(stop_common.py). Silence filler is one block of zeroed PCM tokenized once
+(silence tokens are model-specific) and cycled while no content is queued.
 
-Unlike moshi/flm-audio (a WebSocket wire protocol we can feed byte-by-byte
-via DynamicPCMSource) or the GA-realtime-schema clients (JSON+base64 over a
-websocket, same DynamicPCMSource), BayLing-Duplex's own Python API
-(BayLingDuplex.stream_audio_tokens(), see infer_bayling.py's own module
-docstring) consumes pre-tokenized user-AUDIO TOKENS, not raw PCM, and its
-direct_replay client tokenizes the ENTIRE (padded) input clip up front in
-one `tokenize_audio()` call before streaming begins. That upfront-
-tokenize-the-whole-clip step is just how infer_bayling.py happens to use
-it, though -- NOT a hard requirement of the underlying API: reading
-bayling_duplex/duplex.py directly confirms `stream_audio_tokens()` is a
-真正 per-BLOCK-incremental generator (`for start in range(0, len(tokens),
-x_ratio): ...`) that carries its KV cache / position / assistant-count /
-epad-count forward on a mutable `DuplexStreamState` object passed in via
-`state=`. Calling `stream_audio_tokens(new_tokens, state=state)` again
-after a previous call already advanced that same `state` object simply
-CONTINUES generation from exactly where it left off (confirmed at
-duplex.py: the function's own first line is `if state.stop_requested:
-return`, i.e. it explicitly supports being re-invoked on the same state --
-this isn't a hack, it's the documented mechanism `generate_from_audio_
-tokens()` itself uses internally, just with a single upfront token list
-instead of several later-decided ones).
+MAX_EPAD_COUNT is 2 because a sample can contain two model turns (the original
+response and a post-interruption recovery turn); with 1, `state.stop_requested`
+would fire after the first turn and later calls would return nothing.
 
-So this client drives the model ONE BLOCK (x_ratio=10 tokens = 0.8s of
-user audio, BayLing's own native batching granularity -- see module
-constants below) at a time, calling `stream_audio_tokens()` fresh each
-time with exactly one block's worth of tokens and the SAME persistent
-`state`, pulling those tokens from a `DynamicTokenSource` (stop_common.py)
-instead of a single upfront array -- the token-domain equivalent of how
-infer_stop_moshi.py pulls PCM bytes from a DynamicPCMSource. Silence
-filler (for whenever the source has no real content queued yet -- waiting
-for the trigger, or the post-cue observation window) is pre-tokenized
-ONCE via `tokenize_audio()` on a real zeroed-PCM block (token values are
-model-specific, unlike raw-PCM digital silence, so this can't be
-synthesized generically) and cycled by DynamicTokenSource as needed --
-this also means, unlike infer_bayling.py's own fixed INPUT_TRAILING_PAD_S
-(8.0s, a bounded look-ahead sized to *usually* be enough), our driving
-loop can extend the "listening to silence" window indefinitely for as
-long as our own POST_CUE_OBSERVATION_S cutoff requires, not just a fixed
-lookahead.
-
-max_epad_count: infer_bayling.py uses 1 ("matches this benchmark's
-per-instance expectation of at most one model turn per sample"). We use
-2 here, since `stop` samples genuinely expect up to TWO model turns (the
-original pre-interruption response, analogous to T2, and a post-
-interruption recovery turn, analogous to T4) within one state -- 1 would
-make `state.stop_requested` fire after the FIRST utterance's own EPAD,
-silently dropping every subsequent call (`if state.stop_requested:
-return`) before the interruption/recovery turn ever had a chance to run.
-
-This file is deliberately a SEPARATE module from
-direct_replay/inference/infer_bayling.py (never touches it, never imported
-by it, loads its own independent copy of the model into this process) --
-see trigger_controller.py's own module docstring for the "always a
-separate module" rule.
-
-Standalone usage (single sample, for smoke testing):
-    python infer_stop_bayling.py --sample_dir <path to Candor_stop_0038 etc> \\
+Standalone usage (single sample):
+    python infer_stop_bayling.py --sample_dir <sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -95,16 +48,9 @@ INTERLEAVE_RATIO = "10:5:10"
 INPUT_SR = 16000    # BayLingDuplex.sample_rate
 API_SR = 22050      # BayLingDuplex.output_sample_rate (used for OUTPUT_SR)
 
-# BayLing's underlying audio TOKEN rate is 12.5Hz (matches Moshi/FLM-
-# Audio's own Mimi frame rate exactly -- see module docstring's "Whisper-
-# style VQ encoder, 12.5Hz" and duplex.py's own `time_offset = x_ratio /
-# 12.5`); x_ratio=10 tokens/block = 0.8s is just how many of those 80ms
-# tokens BayLing's own generation loop happens to batch per Python-level
-# step, not a different underlying granularity. So the SAME
-# poll_interval_for_native_chunk(0.08) derivation used for Moshi/FLM-Audio
-# applies here too -- and it also happens to equal the block size (0.8s),
-# which is convenient since a block boundary is the finest granularity we
-# can inject new content at anyway.
+# BayLing's audio token rate is 12.5 Hz (80 ms per token, as for Moshi's
+# Mimi frames); a block of x_ratio=10 tokens is 0.8 s, which is also the
+# finest granularity at which new user content can be injected.
 BAYLING_NATIVE_TOKEN_SEC = 1.0 / 12.5   # 0.08s per audio token
 BAYLING_POLL_INTERVAL_S = poll_interval_for_native_chunk(BAYLING_NATIVE_TOKEN_SEC)  # 1.0s unified user-side poll
 
@@ -124,8 +70,9 @@ class BayLingDuplexStopClient(RealtimeClientBase):
     MODEL_SLUG = BAYLING_SLUG
     OUTPUT_SR = API_SR
     INPUT_SR = INPUT_SR
-    # Same vocoder-lag fix as infer_bayling.py. Trigger still sees live
-    # text tokens; set_speaking(at_s=now_fn()) keeps Immediate on wall-clock.
+    # Vocoder output lags the text stream, as in infer_bayling.py. The trigger
+    # still sees live text tokens; set_speaking(at_s=now_fn()) keeps speaking
+    # onsets on the wall clock.
     CONTIGUOUS_WHILE_SPEAKING = True
 
     _bd = None
@@ -173,11 +120,8 @@ class BayLingDuplexStopClient(RealtimeClientBase):
             tokens, _ = bd.tokenize_audio((wav_tensor, INPUT_SR))
             return list(tokens)
 
-        # Tokenize the two known clips up front (their CONTENT is fully
-        # known -- only WHEN to feed cue_tokens into the running generator
-        # is decided live). Also precompute one block's worth of silence
-        # tokens ONCE, to use as filler for DynamicTokenSource whenever
-        # there's no real content queued yet.
+        # Tokenize the lead-in and cue up front (only when the cue is fed is
+        # decided live), plus one block of silence tokens used as filler.
         lead_in_tokens, cue_tokens, silence_tokens = await asyncio.to_thread(
             lambda: (
                 _tokenize(input_pcm),
@@ -193,10 +137,8 @@ class BayLingDuplexStopClient(RealtimeClientBase):
         state = bd.create_stream_state()
 
         await start_streaming()
-        # Manual segmentation from t=0 -- <|assistant|>/[EPAD] text-token
-        # events (not audio presence) are the model's own speaking signal,
-        # same reasoning as infer_bayling.py / Moshi's continuous-signal
-        # recorder.
+        # Manual segmentation from t=0: <|assistant|>/[EPAD] text-token
+        # events, not audio presence, are the model's speaking signal.
         recorder.set_speaking(False, at_s=0.0)
 
         def now_fn() -> float:
@@ -281,11 +223,8 @@ class BayLingDuplexStopClient(RealtimeClientBase):
                 if cue_drained_at is not None and now_fn() - cue_drained_at >= POST_CUE_OBSERVATION_S:
                     break
                 if state.stop_requested:
-                    # Model itself signaled it's done for good (hit
-                    # MAX_EPAD_COUNT) -- natural end, no point calling
-                    # stream_audio_tokens() again (it would just return
-                    # immediately empty every time per its own top-of-
-                    # function guard).
+                    # MAX_EPAD_COUNT reached; further stream_audio_tokens()
+                    # calls would return nothing.
                     event_logger.log("recv", "state_stop_requested", {"t": now_fn()})
                     break
 
@@ -316,12 +255,8 @@ class BayLingDuplexStopClient(RealtimeClientBase):
             ]
             t_trigger = self.trigger_result.get("t_user_int_start")
             if t_trigger is not None:
-                # self.cue_pcm is raw int16 bytes resampled to INPUT_SR (16kHz)
-                # by run_stop_sample_cli (it's what gets fed to bd.tokenize_
-                # audio(), not what's mixed into the conversation wav -- that
-                # uses a SEPARATE output_sr-resampled copy, see stop_common.py's
-                # run_stop_sample_cli docstring) -- so duration must divide by
-                # INPUT_SR here, not API_SR/output_sr.
+                # self.cue_pcm is int16 at INPUT_SR (it is what gets tokenized;
+                # the conversation wav uses a separate output_sr copy).
                 cue_duration = len(self.cue_pcm) / 2 / INPUT_SR
                 self.simulator_speech_segments.append({
                     "start": round(t_trigger, 4),
@@ -332,20 +267,15 @@ class BayLingDuplexStopClient(RealtimeClientBase):
 
 
 async def await_sync_stream_tokens_to_audio(bd, audio_tokens, stream_id, finalize):
-    # stream_tokens_to_audio() is itself @torch.no_grad() synchronous CUDA
-    # work (CosyVoice-style streaming flow-matching + HiFT decode, same as
-    # infer_bayling.py's own usage) -- run off the event loop exactly like
-    # the tokenize/generate calls above.
+    # stream_tokens_to_audio() is synchronous CUDA work, so run it off the
+    # event loop.
     return await asyncio.to_thread(bd.stream_tokens_to_audio, audio_tokens, stream_id, finalize)
 
 
 def main():
-    # api_sr=INPUT_SR (16kHz): cue_pcm/lead_in_pcm fed to the constructor
-    # (and, inside _connect_and_stream, into bd.tokenize_audio()) must be at
-    # BayLing's own INPUT rate. output_sr=API_SR (22050Hz, BayLing's OUTPUT
-    # rate) is used separately just for building the two-channel
-    # conversation wav so it aligns with output.wav's own sample rate --
-    # see stop_common.py's run_stop_sample_cli docstring.
+    # api_sr=INPUT_SR: cue/lead-in PCM is tokenized at BayLing's input rate.
+    # output_sr=API_SR is used only to build the two-channel conversation wav
+    # at output.wav's sample rate.
     stop_cli_main(BayLingDuplexStopClient, BAYLING_SLUG, INPUT_SR, DEFAULT_MODEL,
                   output_sr=API_SR)
 

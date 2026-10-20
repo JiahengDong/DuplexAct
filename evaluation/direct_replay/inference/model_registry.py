@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/model_registry.py
-=============================================
-Central registry mapping model slugs (used as directory names throughout
+Registry mapping model slugs (used as directory names in
 `results/inference_results/<action>/<l3_condition>/<model_slug>/...`) to their
-client class and required API key environment variable.
-
-`run_inference.py` is the only place that should import this module -- model
-client files (infer_*.py) never need to know about each other.
+client class and required API key environment variable. Used by
+`run_inference.py`.
 """
 
 from __future__ import annotations
@@ -22,10 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 
 from realtime_common import RealtimeClientBase
 
-# Batch-replay clients (e.g. infer_voila.py) implement the same
-# run_sample(...) contract as RealtimeClientBase but subclass
-# local_common.BatchReplayClientBase instead -- both are valid client_cls
-# values, run_inference.py only ever calls run_sample() on whichever it gets.
+# Batch-replay clients (e.g. infer_voila.py) subclass
+# local_common.BatchReplayClientBase instead, with the same run_sample()
+# contract as RealtimeClientBase.
 
 
 @dataclass
@@ -114,11 +109,8 @@ def _load_lychee_fd_cls():
     return LycheeFDClient
 
 
-# Lazily-resolved so importing this module never requires every model's SDK
-# (e.g. google-genai, boto3, sphn) to be installed just to run one model's
-# batch -- doubly important for open-source models, since each one lives in
-# its own venv (see opensource_models/<slug>/venv/) and most of their
-# packages simply won't be importable from any other model's environment.
+# Resolved lazily so running one model does not require every model's SDK;
+# each open-source model has its own venv (opensource_models/<slug>/venv/).
 _LAZY_LOADERS: dict[str, Callable[[], Type[RealtimeClientBase]]] = {
     "gpt-realtime-2.1":            _load_gpt_realtime_cls,
     "gemini-3.1-flash-live":       _load_gemini_live_cls,
@@ -165,7 +157,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         api_key_env="DASHSCOPE_API_KEY",
         default_system_prompt=DEFAULT_SYSTEM_PROMPT,
     ),
-    # ── Open-source, locally-hosted models (Tier 1) ──────────────────────
+    # ── Open-source, locally-hosted models ───────────────────────────────
     "moshi": ModelSpec(
         slug="moshi",
         model_name="kyutai/moshiko-pytorch-bf16",   # HF repo id passed to --hf-repo
@@ -192,14 +184,14 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         model_name="BayLing-Models/BayLing-Duplex",   # HF repo id passed to BayLingDuplex(model_path=...)
         client_cls=None,
         api_key_env="LOCAL_NO_KEY",
-        default_system_prompt="",   # BayLingDuplex has no system-prompt/instruction parameter at all
+        default_system_prompt="",   # BayLingDuplex has no system-prompt parameter
     ),
     "raon-speechchat": ModelSpec(
         slug="raon-speechchat",
         model_name="KRAFTON/Raon-SpeechChat-9B",   # HF repo id passed to AutoModel.from_pretrained
         client_cls=None,
         api_key_env="LOCAL_NO_KEY",
-        default_system_prompt=DEFAULT_SYSTEM_PROMPT,   # real chat-style system prompt, same convention as closed-source clients
+        default_system_prompt=DEFAULT_SYSTEM_PROMPT,   # chat-style system prompt
     ),
     "freeze-omni": ModelSpec(
         slug="freeze-omni",
@@ -207,28 +199,28 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         client_cls=None,
         api_key_env="LOCAL_NO_KEY",
         default_system_prompt="You are a helpful voice assistant. Your answer should be "
-                               "coherent, natural, simple, complete. Do not answer too long.",   # matches official demo's own "role" default
+                               "coherent, natural, simple, complete. Do not answer too long.",   # official demo's "role" default
     ),
     "mini-omni2": ModelSpec(
         slug="mini-omni2",
         model_name="gpt-omni/mini-omni2",   # HF repo id, downloaded as a flat ckpt_dir
         client_cls=None,
         api_key_env="LOCAL_NO_KEY",
-        default_system_prompt="",   # run_AT_batch_stream's prompt scaffolding has no system-prompt slot at all
+        default_system_prompt="",   # run_AT_batch_stream has no system-prompt slot
     ),
     "vita-1.5": ModelSpec(
         slug="vita-1.5",
         model_name="VITA-MLLM/VITA-1.5",   # + VITA-1.5_AudioEnc / InternViT-300M-448px (auto-resolved via config.json)
         client_cls=None,
         api_key_env="LOCAL_NO_KEY",
-        default_system_prompt=DEFAULT_SYSTEM_PROMPT,   # real chat-template system-message slot ("lang" modality), same convention as closed-source clients
+        default_system_prompt=DEFAULT_SYSTEM_PROMPT,   # chat-template system message ("lang" modality)
     ),
     "flm-audio": ModelSpec(
         slug="flm-audio",
         model_name="CofeAI/FLM-Audio",   # single repo, passed as both --mimi-path and --model-path
         client_cls=None,
         api_key_env="LOCAL_NO_KEY",
-        default_system_prompt="",   # no text-preamble/instruction-seeding mechanism at all (same situation as Moshi)
+        default_system_prompt="",   # no system-prompt mechanism (like Moshi)
     ),
     "lychee-fd": ModelSpec(
         slug="lychee-fd",

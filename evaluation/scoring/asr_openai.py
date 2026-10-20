@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 """
-evaluation/scoring/asr_openai.py
-================================
 Batch-transcribes every `output.wav` under an inference_results tree via the
 OpenAI Whisper API (`whisper-1`, verbose_json, word + segment timestamps),
 writing a sibling `asr.json`. Swap in a local model by replacing
@@ -20,46 +18,27 @@ Output schema (asr.json) (`chunks: [{text, timestamp:[start,end]}]` = word-level
 
 `chunks` is authoritative for per-segment scoring. Any model_speech_segment the
 whole-file pass left wordless is re-transcribed on its own and merged into
-`chunks` in the same run -- see _fill_unheard_segments for why that is needed
-and what it costs to skip. One invocation is enough; there is no second pass.
+`chunks` in the same run (see _fill_unheard_segments).
 
 A silent/near-empty output.wav (< MIN_AUDIO_S) is not sent to the API; an
 empty asr.json ({"text": "", "chunks": [], "segments": [], "skipped": true})
 is written instead.
 
-KNOWN AND ACCEPTED -- Whisper hallucinates on silence. output.wav is a single
-speaker track with long quiet stretches, which is exactly the condition that
-makes whisper-1 emit high-frequency training phrases: this corpus contains
-"Thanks for watching!", "don't forget to subscribe!", "Transcribed by
-https://otter.ai", "Silence.", and bare "you" / "Thank you." as whole segments.
-Measured 8731 bare-"you" segment texts across 38764 asr.json.
+Whisper hallucinates on long silent stretches (e.g. "Thanks for watching!",
+bare "you"). This is not filtered: speech segments come from the recorder's
+VAD, never from ASR, and run_metrics.segment_texts buckets word-level `chunks`
+into those segments by timestamp, so text hallucinated in silence has no
+segment to land in. Filtering by text would also drop real one-word
+backchannels. Isolated slices in _fill_unheard_segments are the most prone to
+hallucination, so that pass is limited to sufficiently energetic slices.
 
-It is left uncorrected because scoring is structurally insulated from it.
-Segments come from the recorder's VAD, never from ASR, and run_metrics.
-segment_texts buckets word-level `chunks` into those segments by timestamp, so
-a hallucination in silence has no segment to land in and is dropped: the 8731
-collapse to 271 bare-token segments on the scoring path (0.27%), and flipping
-those to "no transcript" moves 13 of 10992 Immediate scores (0.118%, worst cell
-0.51%). Filtering would cost more than it saves, since wait.is_backchannel is a
-word count (<= 3) and a real one-word backchannel is indistinguishable from a
-hallucinated one by text alone.
-
-Where it does bite hardest is _fill_unheard_segments: an isolated low-energy
-slice with no surrounding context is the worst case for hallucination, and 95
-of its 1111 outputs (8.6%) carry a suspicious signature, including cross-
-language garbage. The absolute count is small enough not to matter, but do not
-widen that pass without re-measuring.
-
-Note when reading asr.json by hand: non-Latin text is usually NOT hallucination.
-Several models genuinely answer in Chinese, so entire coherent Mandarin
-sentences appear; and `chunks` is word-level, so a high count of the token
-"you" is ordinary English word frequency rather than a hallucination signal.
+Non-Latin text in asr.json is usually genuine: several models answer in Chinese.
 
 Usage:
     python asr_openai.py --action wait --model gpt-realtime-2.1
     python asr_openai.py --action backchannel --l3_condition backchannel_affirmative \\
         --model gemini-3.1-flash-live --workers 8
-    python asr_openai.py --action turn_taking --overwrite --limit 5   # smoke test, all models
+    python asr_openai.py --action turn_taking --overwrite --limit 5   # all models, 5 files
 """
 from __future__ import annotations
 
@@ -101,10 +80,9 @@ ACTIONS = DR_ACTIONS + SIM_ACTIONS
 MIN_AUDIO_S = 0.30      # below this, don't bother calling the API
 ASR_MODEL = "whisper-1"
 
-# Repair pass (see _repair_empty_segments). A `model_speech_segment` that came
-# back with no words at all is only re-transcribed if it is at least this long
-# and its RMS is at least this fraction of the whole file's -- below that it is
-# genuinely quiet and the empty result was correct.
+# Fill pass (see _fill_unheard_segments). A wordless `model_speech_segment` is
+# only re-transcribed if it is at least this long and its RMS is at least this
+# fraction of the whole file's; otherwise it is genuinely quiet.
 MIN_SLICE_S = 0.12
 SLICE_ENERGY_RATIO = 0.5
 MAX_RETRIES = 3
@@ -225,7 +203,7 @@ def _model_speech_segments(wav_path: Path) -> list[tuple[float, float]]:
 
 
 def _has_word_in(chunks: list, on: float, off: float) -> bool:
-    """Mirrors the overlap rule of metrics/run_metrics.py's words_in()."""
+    """Mirrors the overlap rule of scoring/run_metrics.py's words_in()."""
     for c in chunks:
         ts = c.get("timestamp") or [None, None]
         s = ts[0]
@@ -239,26 +217,14 @@ def _has_word_in(chunks: list, on: float, off: float) -> bool:
 
 def _fill_unheard_segments(wav_path: Path, duration_s: float, result: dict) -> dict:
     """
-    Transcribing the whole file silently loses model turns that sit alone in a
-    long stretch of silence: `output.wav` is a single-speaker track, so a 30 s
-    Whisper window can hold one 0.24 s "Yeah." and nothing else, and the window
-    is discarded as no-speech. Measured on this benchmark that costs 2.6 % of
-    simulator segments and 4.8 % of direct_replay ones, and it is heavily
-    model-dependent (0.9 % for gpt-realtime, 24 % for lychee-fd), so it biases
-    cross-model comparison rather than adding uniform noise.
-
-    Worse than the lost words is how a lost segment reads downstream: an empty
-    transcript makes is_backchannel() return None, which every caller treats as
-    substantive speech -- so a quarter-second "Yeah." can satisfy a takeover
-    criterion. Full-Duplex-Bench sidesteps the same problem by cropping to the
-    region of interest before its ASR call (get_transcript/asr.py) and by
-    scoring an empty transcript as "no turn taken".
+    Whole-file transcription can drop a short model turn that sits alone in a
+    long silence (Whisper discards the 30 s window as no-speech). The loss is
+    model-dependent, and an empty transcript makes is_backchannel() return
+    None, which callers treat as substantive speech.
 
     So any `model_speech_segment` the whole-file pass left wordless is
-    re-transcribed on its own, and its words are merged back with the segment
-    offset added. This runs inside the single transcription step on purpose:
-    one invocation of this script yields a correct asr.json, with no follow-up
-    repair stage to remember.
+    re-transcribed on its own, and its words are merged back into `chunks`
+    with the segment offset added.
     """
     segs = _model_speech_segments(wav_path)
     if not segs:
@@ -346,12 +312,11 @@ def discover_output_wavs(
     model: Optional[str],
 ) -> list[Path]:
     """
-    Walk to every `output.wav`, filtering by directory NAME rather than by
-    depth, because the two result trees this has to serve nest differently:
-    direct_replay is <action>/<l3_condition>/<model>/<sample>/, the simulator
-    is <action>/<model>/<sample>/ (it has no l3_condition level). A batch run
-    written to its own --results_root has no <action> level at all, so
-    `action` is optional and simply selects a subdirectory when given.
+    Find every `output.wav`, filtering by directory name rather than depth
+    because the result trees nest differently: direct_replay is
+    <action>/<l3_condition>/<model>/<sample>/, the simulator is
+    <action>/<model>/<sample>/. `action` is optional and selects a
+    subdirectory when given.
     """
     scan_root = (results_root / action) if action else results_root
     if not scan_root.is_dir():

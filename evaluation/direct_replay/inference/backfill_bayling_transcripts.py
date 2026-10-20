@@ -1,33 +1,23 @@
 #!/usr/bin/env python3
 """
-backfill_bayling_transcripts.py -- add `model_speech_transcripts` to BayLing's
-existing direct-replay results, offline, with no GPU and no re-inference.
+Add `model_speech_transcripts` to BayLing's Direct Replay results offline,
+from the `text_token` events already in each sample's events.jsonl.
 
-Why BayLing needs live transcript instead of ASR: 55% of the 20 ms frames
-inside its speaking segments are literally all-zero samples (the vocoder runs
-slower than realtime and the recorder writes that GPU stall as silence inside
-an open turn), 96% of that zero time sitting in runs longer than 0.3 s. Whisper
-returns 0.54 words/s on it against a 2.5-3.5 words/s conversational band, and
-comes back completely empty on a quarter of samples. `run_metrics.
-LIVE_TRANSCRIPT_MODELS` therefore prefers the model's own text for this slug --
-but direct replay never recorded that field, so Subsequent was withheld.
+BayLing's vocoder runs slower than real time, so its speaking segments contain
+long stretches of zero samples and ASR on output.wav is unreliable.
+`run_metrics.LIVE_TRANSCRIPT_MODELS` therefore uses the model's own text for
+this model. `infer_bayling.py` logs that text (`DuplexStreamEvent.text`) as
+timestamped `text_token` events; this script buckets them into the sample's
+`model_speech_segments` and writes the result into inference_info.json.
 
-Why no re-run is needed: `infer_bayling.py` already logs BayLing's native
-`DuplexStreamEvent.text` as a timestamped `text_token` event, so every existing
-sample's events.jsonl carries the text and its timing. 99.5% of 2000 samples
-have it. This script buckets those tokens into the sample's own
-`model_speech_segments` and writes the result back into inference_info.json.
+Bucketing uses the simulator's `default_model_speech_transcripts()`, so both
+pipelines produce the same text. Tokens are joined with "" because BayLing's
+tokens already carry a leading space at word boundaries.
 
-Bucketing is imported from the simulator's `default_model_speech_transcripts()`
-rather than reimplemented, so direct replay and simulator produce the same text
-for the same audio -- in particular the ""-join, which is deliberate: BayLing's
-tokens already carry their own leading space at word boundaries.
-
-Writes are additive (only the one key), atomic (temp file + rename), and
-idempotent: re-running overwrites the same key with the same value. Samples
-with no text_token get a list of "" of the right length -- NOT a short list or
-None, because `run_metrics.segment_texts()` decides whether native text is
-usable by checking `len(native) == len(segs)`.
+Only that one key is written, atomically (temp file + rename), and running
+again gives the same result. Samples with no text_token get one "" per
+segment, because `run_metrics.segment_texts()` only uses native text when
+`len(native) == len(segs)`.
 
 Usage:
   python3 backfill_bayling_transcripts.py --dry_run     # report, write nothing

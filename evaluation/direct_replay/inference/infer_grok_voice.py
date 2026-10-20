@@ -1,47 +1,27 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_grok_voice.py
-==============================================
-xAI Grok Voice (Speech-to-Speech) client, built on the shared
-`RealtimeClientBase` / `SynchronizedRecorder` infrastructure in
-realtime_common.py.
+xAI Grok Voice (speech-to-speech) client, built on `RealtimeClientBase` /
+`SynchronizedRecorder` in realtime_common.py.
 
-Protocol (per docs.x.ai/developers/model-capabilities/audio/speech-to-speech,
-Aug 2026) is essentially the same GA schema as OpenAI's Realtime API:
+The protocol (docs.x.ai speech-to-speech) follows OpenAI's GA Realtime schema:
   - wss://api.x.ai/v1/realtime?model=grok-voice-latest
-  - session.update: nested "audio.input/output.format.type/rate" (same shape
-    as OpenAI's GA session.audio), "turn_detection": {"type": "server_vad",
-    "silence_duration_ms": ...}, "instructions", "voice".
-  - Model audio arrives via "response.output_audio.delta" (alias:
-    "response.audio.delta", handled generically like the GPT client).
-  - Docs explicitly recommend server_vad for "automatic, natural barge-in",
-    so -- like GPT-Realtime -- we treat input_audio_buffer.speech_started
-    while a response is in progress as a genuine interruption and call
-    recorder.interrupt(); no explicit response.cancel needed from us.
-  - No forced response.create: turn_detection (server_vad) governs response
-    creation autonomously from the continuously appended input stream.
+  - session.update with nested "audio.input/output.format", "turn_detection"
+    ({"type": "server_vad"}), "instructions" and "voice".
+  - Model audio arrives as "response.output_audio.delta" (alias
+    "response.audio.delta").
+  - server_vad handles barge-in: input_audio_buffer.speech_started during a
+    response is treated as an interruption (recorder.interrupt()); no
+    response.cancel or response.create is sent.
 
-Correctness fixes from realtime_direct_replay_code_review.pdf:
-  - Server `error` events now raise ProviderError instead of only being
-    logged, so an API-side failure is recorded in the sample's `errors` list
-    rather than potentially looking like clean model silence (F-04).
-  - Post-input cutoff (design decision, supersedes an earlier drain_until_quiet
-    heuristic): reception is cancelled immediately once input playback
-    (including padding) ends -- a hard, fixed window boundary applied
-    uniformly across every provider and both model classes (F-01 revisited).
-  - Send pacing uses absolute deadlines instead of a fixed post-send sleep,
-    so per-frame overhead can't accumulate into replay drift (F-10).
-  - Terminal response status is now classified (code review R-06): this
-    client used to ignore `response.done`'s `status` entirely, only using
-    the event to flip `response_active` back to False. It now goes through
-    the same `classify_terminal_response_status()` as GPT/Qwen -- a
-    "failed" or "incomplete" terminal response, or a "cancelled" one that
-    wasn't already explained by a recorded barge-in, fails the sample.
-  - Late deltas can no longer resume a cancelled response (code review
-    R-03): audio-delta events' `response_id` is now passed to
-    `recorder.add()`, and `recorder.interrupt()` is told which response id
-    server_vad just truncated, so a straggler delta for that id is dropped
-    instead of resuming playback.
+Behaviour:
+  - Server `error` events raise ProviderError, so API failures are recorded in
+    the sample's `errors` rather than looking like model silence.
+  - Reception stops as soon as input playback (including padding) ends.
+  - Sends are paced on absolute deadlines so per-frame overhead does not drift.
+  - `response.done` status goes through `classify_terminal_response_status()`:
+    failed, incomplete, or unexplained cancelled responses fail the sample.
+  - Audio deltas carry their `response_id`, so a late delta for an interrupted
+    response is dropped instead of resuming playback.
 """
 
 from __future__ import annotations
@@ -61,7 +41,7 @@ from dotenv import load_dotenv
 try:
     import websockets
 except ImportError as e:
-    # Raise rather than sys.exit(1) (F-20): SystemExit isn't caught by
+    # Raise rather than sys.exit(1): SystemExit isn't caught by
     # model_registry.available_models()'s `except Exception`.
     raise ImportError("websockets not installed. Run: pip install websockets") from e
 
@@ -84,12 +64,12 @@ CHUNK_MS      = 20
 CHUNK_SAMPLES = API_SR * CHUNK_MS // 1000
 CHUNK_BYTES   = CHUNK_SAMPLES * BYTES_PER_SAMPLE
 
-# See infer_gpt_realtime.py's MAX_WS_MESSAGE_BYTES docstring (F-22).
+# See MAX_WS_MESSAGE_BYTES in infer_gpt_realtime.py.
 MAX_WS_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 class ProviderError(RuntimeError):
-    """Raised when xAI sends an explicit `error` event (see F-04)."""
+    """Raised when xAI sends an explicit `error` event."""
 
 SYSTEM_PROMPT = (
     "You are a helpful and friendly conversational AI assistant. "
@@ -115,8 +95,8 @@ class GrokVoiceClient(RealtimeClientBase):
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         response_active = False
-        expecting_cancel = False   # R-06: set when barge-in already recorded an interrupt
-        current_response_id: Optional[str] = None   # R-03
+        expecting_cancel = False   # set when barge-in already recorded an interrupt
+        current_response_id: Optional[str] = None
         provider_errors: list[dict] = []
 
         async with websockets.connect(
@@ -133,10 +113,7 @@ class GrokVoiceClient(RealtimeClientBase):
                     "voice": self.voice,
                     "instructions": self.system_prompt,
                     # No threshold/silence_duration_ms override: use xAI's
-                    # documented defaults (threshold 0.85, energy-based
-                    # server_vad) so we aren't hand-tuning sensitivity in
-                    # either direction relative to how a real user would
-                    # configure the API out of the box.
+                    # documented server_vad defaults.
                     "turn_detection": {
                         "type": "server_vad",
                     },
@@ -157,8 +134,7 @@ class GrokVoiceClient(RealtimeClientBase):
 
                     if etype in ("response.output_audio.delta", "response.audio.delta"):
                         pcm_bytes = base64.b64decode(event.get("delta", ""))
-                        # R-03: see infer_gpt_realtime.py -- pass the delta's
-                        # own response_id so a straggler for an
+                        # Pass the delta's response_id so a straggler for an
                         # already-cancelled response is dropped.
                         await recorder.add(pcm_bytes, response_id=event.get("response_id"))
                         event_logger.log("recv", etype, n_bytes=len(pcm_bytes))
@@ -170,15 +146,13 @@ class GrokVoiceClient(RealtimeClientBase):
 
                     elif etype == "input_audio_buffer.speech_started":
                         if response_active:
-                            # Per docs: server_vad gives "automatic, natural
-                            # barge-in" -- the server truncates the in-progress
-                            # response on its own when new speech arrives.
+                            # server_vad truncates the in-progress response
+                            # on its own when new speech arrives.
                             recorder.interrupt(reason="input_speech_during_response",
                                                 response_id=current_response_id)
                             response_active = False
-                            expecting_cancel = True   # R-06: server_vad's own
-                            # auto-truncation should make the next
-                            # response.done "cancelled"
+                            expecting_cancel = True   # next response.done
+                            # should be "cancelled"
                             event_logger.log("recv", etype, {"barge_in": True})
                         else:
                             event_logger.log("recv", etype, {"barge_in": False})
@@ -187,9 +161,8 @@ class GrokVoiceClient(RealtimeClientBase):
                         response = event.get("response", {})
                         status = response.get("status", "unknown")
                         response_active = False
-                        # R-06: see infer_gpt_realtime.py -- classify instead
-                        # of just logging so failed/incomplete/unexplained
-                        # cancelled responses fail the sample.
+                        # Failed, incomplete, or unexplained cancelled
+                        # responses fail the sample.
                         label, is_error = classify_terminal_response_status(
                             status, expected_cancel=is_expected_cancel(
                                 expecting_cancel, status,
@@ -229,9 +202,8 @@ class GrokVoiceClient(RealtimeClientBase):
             # t=0 for the recorder/event-log starts at the first audio chunk,
             # not at connect/session-update time.
             loop = asyncio.get_event_loop()
-            # send_t0 IS stream_start["t"] (see start_streaming()'s
-            # docstring in realtime_common.py) -- shared, not a second
-            # independently-measured clock read.
+            # send_t0 is the same clock origin as stream_start["t"]
+            # (see start_streaming() in realtime_common.py).
             send_t0 = await start_streaming()
             pcm_bytes_all = input_pcm.tobytes()
             for i, off in enumerate(range(0, len(pcm_bytes_all), CHUNK_BYTES)):
@@ -243,13 +215,13 @@ class GrokVoiceClient(RealtimeClientBase):
                     "audio": base64.b64encode(chunk).decode(),
                 }))
                 event_logger.log("send", "input_audio_buffer.append", n_bytes=len(chunk))
-                # Absolute deadline instead of a fixed post-send sleep (F-10).
+                # Absolute deadline so per-chunk overhead does not accumulate.
                 await sleep_until_deadline(loop, send_t0 + (i + 1) * (CHUNK_MS / 1000))
 
             # No manual commit/response.create: server_vad governs turn
             # segmentation and response creation autonomously.
 
-            # Hard cutoff at input end: see infer_gpt_realtime.py.
+            # Hard cutoff at input end.
             recv_task.cancel()
             try:
                 await recv_task

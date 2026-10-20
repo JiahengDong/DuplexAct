@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_gpt_realtime.py
+OpenAI GPT-Realtime client for the simulator-driven `stop` action (live
+LLM-triggered cue injection; see trigger_controller.py). Thin subclass of
+realtime_api_stop_common.RealtimeAPIStopClientBase, which documents what is
+shared vs. provider-specific.
 
-OpenAI GPT-Realtime client for the `stop` Level-2 action, simulator-driven
-(live LLM-triggered injection -- see trigger_controller.py's module
-docstring for the full architecture rationale). Thin subclass of
-realtime_api_stop_common.RealtimeAPIStopClientBase -- see that module's
-own docstring for what's shared vs. provider-specific.
-
-This file is deliberately a SEPARATE module from
-direct_replay/inference/infer_gpt_realtime.py (never touches it, never
-imported by it), so the already-validated direct_replay pipeline is never
-affected -- see MODEL_COMPATIBILITY.md's gpt-realtime-2.1 entry.
-
-Standalone usage (single sample, for smoke testing):
-    python infer_stop_gpt_realtime.py --sample_dir <path to Candor_stop_0038 etc> \\
+Standalone usage (single sample):
+    python infer_stop_gpt_realtime.py --sample_dir <path to a stop sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -47,14 +39,13 @@ class GPTRealtimeStopClient(RealtimeAPIStopClientBase):
     WS_URL = REALTIME_WS_URL
     CHUNK_MS = 20
     API_SR = API_SR
-    # OpenAI is the only provider of the four that accepts this -- see the
-    # base class's SUPPORTS_ITEM_TRUNCATE comment.
+    # OpenAI is the only supported realtime provider that accepts this; see
+    # the base class's SUPPORTS_ITEM_TRUNCATE comment.
     SUPPORTS_ITEM_TRUNCATE = True
 
     def build_session_update(self):
-        # Same shape as infer_gpt_realtime.py's own session_update -- see
-        # that file for the full rationale (semantic_vad governs response
-        # creation autonomously, no forced response.create).
+        # Same session as direct_replay's infer_gpt_realtime.py: semantic_vad
+        # decides when to respond, with no forced response.create.
         return {
             "type": "session.update",
             "session": {

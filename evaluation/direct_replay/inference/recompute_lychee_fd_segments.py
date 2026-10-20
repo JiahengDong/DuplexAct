@@ -1,44 +1,29 @@
 #!/usr/bin/env python3
 """
-evaluation/direct_replay/inference/recompute_lychee_fd_segments.py
-======================================================================
-Re-runnable, idempotent post-inference fix-up for lychee-fd. Run it after
-direct-replay inference for lychee-fd and before scoring.
+Idempotent post-inference step for lychee-fd. Run it after direct-replay
+inference for lychee-fd and before scoring.
 
-Summary of the bug: `infer_lychee_fd.py`'s `model_speech_segments` are
-derived from the model's own native `round_trace["events"]`, whose
-timestamps are computed relative to an INPUT-TIMELINE offset
-(`idx / INPUT_SR`) rather than real wall-clock arrival time. Once any
-single round's own generation call overruns its 400ms dispatch budget
-(routine for any response long/slow enough to matter), real-time pacing
-breaks down and this offset diverges severely from when the audio was
-actually produced/played -- confirmed on a live sample: an event that
-closed at real wall-clock t=33.55s was labelled with a ~22.8s timestamp,
-an 11-second error. Net effect: `model_speech_segments` can report as
-little as ~2% of the model's real total speaking duration for a given
-sample, while `output.wav` itself is completely intact (the actual PCM
-samples are unaffected -- only the derived event LABELS are wrong).
+`infer_lychee_fd.py` derives `model_speech_segments` from the model's native
+`round_trace["events"]`, whose timestamps are input-timeline offsets
+(`idx / INPUT_SR`), not wall-clock arrival times. When a round's generation
+overruns its 400ms dispatch budget those offsets drift from when the audio
+was actually produced, so the segments can badly under-report speech.
+`output.wav` itself is correct.
 
-Fix: re-derive `model_speech_segments` directly from each sample's own
-`output.wav` audio energy (see `realtime_common.
-recompute_speech_segments_from_audio()` for the method/tuning), applied to
-every `inference_results/**/lychee-fd/*/inference_info.json`.
-
-Safety / idempotency:
-  - The ORIGINAL `model_speech_segments` value is preserved under a new
-    `model_speech_segments_original_round_trace` key (never overwritten
-    again once present, unless --force) -- so this is always reversible
-    and safe to re-run.
-  - A `model_speech_segments_recomputed_at` ISO timestamp marks which
-    files have already been fixed; re-running without --force skips them.
-  - `--dry_run` computes and reports the recomputation without writing
-    anything, for a first pass to sanity-check the scale of the change
-    before committing.
+This script re-derives `model_speech_segments` from each sample's
+`output.wav` energy (`realtime_common.recompute_speech_segments_from_audio()`)
+for every `inference_results/**/lychee-fd/*/inference_info.json`:
+  - The original value is kept under
+    `model_speech_segments_original_round_trace` (not overwritten unless
+    --force).
+  - A `model_speech_segments_recomputed_at` timestamp marks processed files;
+    they are skipped unless --force.
+  - `--dry_run` reports the change without writing anything.
 
 Usage:
-    python recompute_lychee_fd_segments.py --dry_run
-    python recompute_lychee_fd_segments.py                 # applies the fix
-    python recompute_lychee_fd_segments.py --results_root <path> --force
+    python evaluation/direct_replay/inference/recompute_lychee_fd_segments.py --dry_run
+    python evaluation/direct_replay/inference/recompute_lychee_fd_segments.py
+    python evaluation/direct_replay/inference/recompute_lychee_fd_segments.py --results_root <path> --force
 """
 from __future__ import annotations
 
@@ -114,7 +99,7 @@ def main() -> None:
         after_s = _segment_total(new_segments)
         total_before += before_s
         total_after += after_s
-        if after_s - before_s > 1.0:   # more than 1s of previously-invisible speech recovered
+        if after_s - before_s > 1.0:   # more than 1s of extra speech recovered
             big_changes.append((sample_id, before_s, after_s))
 
         if not args.dry_run:

@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/interrupt_user_common.py
-===========================================================
-Shared helpers for ALL per-model `interrupt_user`-action simulator clients
-(infer_interrupt_<model>.py), architectural sibling of stop_common.py --
-see that module's own docstring for the general "why a separate file"
-rationale, and interrupt_controller.py's module docstring for why
-interrupt_user needs a genuinely different driver rather than reusing
-stop_common.py's run_stop_sample_cli (roles reversed: simulator speaks
-one continuous utterance, model may barge in; LLM take-turn truncates
-the remaining user speech).
+Shared helpers for the per-model `interrupt_user` simulator clients
+(infer_interrupt_<model>.py), the counterpart of stop_common.py.
 
-Data layout (evaluation/data/interrupt_user/<l3_condition>/
-<sample_id>/): user_speech.wav + branch_acknowledged.wav +
-branch_ignored.wav + metadata.json. metadata.json's own `branch_label`
-field (the ORIGINAL human recording's ground-truth outcome) is NOT used
-here -- the simulator picks a branch live, based on the model UNDER TEST's
-own actual behavior, which may of course differ from what the real human
-conversation happened to do.
+Roles are reversed relative to stop: the simulator speaks one continuous
+utterance and the model may barge in; when the LLM decides the model has
+taken the turn, the remaining user speech is truncated (see
+interrupt_controller.py).
+
+Data layout (evaluation/data/interrupt_user/<l3_condition>/<sample_id>/):
+user_speech.wav + branch_acknowledged.wav + branch_ignored.wav +
+metadata.json. metadata.json's `branch_label` (the source recording's
+outcome) is not used; the outcome depends on the model under test.
 """
 from __future__ import annotations
 
@@ -32,9 +26,9 @@ from typing import Optional, Type
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from stop_common import build_conversation_script  # noqa: E402  (fully action-agnostic, reused as-is)
+from stop_common import build_conversation_script  # noqa: E402
 
-POST_BRANCH_OBSERVATION_S = 15.0  # same convention/derivation as stop_common.POST_CUE_OBSERVATION_S
+POST_BRANCH_OBSERVATION_S = 15.0  # same convention as stop_common.POST_CUE_OBSERVATION_S
 
 
 def build_interrupt_simulator_speech_segments(
@@ -49,9 +43,8 @@ def build_interrupt_simulator_speech_segments(
     """
     Shared simulator-side timeline for interrupt_user clients. user_speech
     `end` is the REAL truncation point (t_model_onset_detected, else the
-    full clip). No second simulator clip -- interrupt means stop, else
-    play through. `pcm_sr` is unused and kept so existing client call
-    sites stay valid.
+    full clip). There is no second simulator clip: the user either stops
+    or plays through. `pcm_sr` is unused.
     """
     t_onset = monitor_result.get("t_model_onset_detected")
     t_user_speech_end = t_onset if t_onset is not None else input_duration
@@ -71,17 +64,14 @@ def build_conversation_wav_interrupt(
     t_user_speech_end: float, t_branch_start: Optional[float],
 ) -> None:
     """
-    Two-sided-recording builder for interrupt_user, sibling of
-    stop_common.build_conversation_wav (see that function's own docstring
-    for the full "why placing clips at raw sample offsets lines up
-    correctly with output.wav" rationale -- identical reasoning applies
-    here, just with a different pair of simulator clips being placed).
+    Two-sided recording for interrupt_user (see
+    stop_common.build_conversation_wav for why raw sample offsets line up
+    with output.wav).
 
-    ch0 (simulator) = the full user utterance from t=0, TRUNCATED at
-    `t_user_speech_end` (the real moment playback was cut off -- the full
-    clip if IGNORED, or the take-turn point if ACKNOWLEDGED). No second
-    user clip is placed.
-    ch1 (model) = output.wav verbatim, same as stop_common's version.
+    ch0 (simulator) = the user utterance from t=0, truncated at
+    `t_user_speech_end` (the full clip if ignored, the take-turn point if
+    acknowledged).
+    ch1 (model) = output.wav verbatim.
     """
     import soundfile as sf
     model_pcm, sr = sf.read(str(output_wav), dtype="int16")
@@ -102,9 +92,9 @@ def build_conversation_wav_interrupt(
 
 
 def build_interrupt_cli_parser(default_model: str) -> argparse.ArgumentParser:
-    """Shared argparse setup, sibling of stop_common.build_stop_cli_parser."""
+    """Shared argparse setup (counterpart of stop_common.build_stop_cli_parser)."""
     parser = argparse.ArgumentParser(
-        description="Simulator interrupt_user-action smoke-test CLI (single sample).",
+        description="Simulator interrupt_user-action CLI (single sample).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--sample_dir", type=Path, required=True,
@@ -128,16 +118,15 @@ async def run_interrupt_sample_cli(
     output_sr: Optional[int] = None,
 ) -> dict:
     """
-    Generic single-sample driver, sibling of stop_common.run_stop_sample_cli.
+    Generic single-sample driver (counterpart of stop_common.run_stop_sample_cli).
 
     `client_cls` must implement the same contract as
     infer_interrupt_moshi.py's InterruptMoshiClient:
     - constructor: (api_key, model_name, system_prompt, verbose,
       branch_acknowledged_pcm, branch_ignored_pcm, reference_context,
       llm_client=None, **client_kwargs). llm_client is the OpenAI client
-      used ONLY by InterruptMonitorController to decide when the
-      simulator stops talking -- never used by stop/hold_floor/
-      respond_and_recover.
+      InterruptMonitorController uses to decide when the simulator stops
+      talking.
     - after run_sample() resolves: `.monitor_result` (dict, from
       InterruptMonitorController.run()'s return value) and
       `.simulator_speech_segments` are both populated.
@@ -170,7 +159,7 @@ async def run_interrupt_sample_cli(
     full_user_wav = branch_ign_wav if branch_ign_wav.exists() else user_speech_wav
     user_speech_duration = sf.info(str(full_user_wav)).duration
     user_speech_pcm = load_and_resample(full_user_wav, api_sr).tobytes()
-    # Branch wavs are no longer played. Empty buffers keep client constructors unchanged.
+    # Branch wavs are not played; clients still take them as (empty) arguments.
     branch_ack_pcm  = b""
     branch_ign_pcm  = b""
     user_speech_pcm_conv = user_speech_pcm if conv_sr == api_sr else load_and_resample(full_user_wav, conv_sr).tobytes()
@@ -230,9 +219,7 @@ async def run_interrupt_sample_cli(
     result["conversation"] = conversation_turns
     result["conversation_text"] = conversation_text
 
-    # user_speech simulator segment's own recorded "end" (see
-    # simulator_speech_segments construction in each client) IS the real
-    # truncation point already -- reuse it directly rather than re-deriving.
+    # The user_speech segment's "end" is already the real truncation point.
     user_seg = next((s for s in result["simulator_speech_segments"] if s.get("source") == "user_speech"), None)
     t_user_speech_end = user_seg["end"] if user_seg else user_speech_duration
 
@@ -248,8 +235,7 @@ async def run_interrupt_sample_cli(
     print("\n--- conversation ---")
     print(conversation_text)
 
-    # actions/interrupt_user.py's score_b/score_t read instance.timestamps
-    # {"t_target", "t_user_start"} -- see that module's own docstring.
+    # interrupt_user scoring reads instance.timestamps {"t_target", "t_user_start"}.
     timestamps = {
         "t_target": reference_context.get("t_target"),
         "t_user_start": reference_context.get("t_user_start", 0.0),
@@ -271,7 +257,7 @@ async def run_interrupt_sample_cli(
 def interrupt_cli_main(client_cls: Type, model_slug: str, api_sr: int, default_model: str,
                         client_kwargs: Optional[dict] = None, api_key_env: Optional[str] = None,
                         output_sr: Optional[int] = None) -> None:
-    """Standalone single-sample smoke-test entry point, sibling of stop_common.stop_cli_main."""
+    """Standalone single-sample entry point (counterpart of stop_common.stop_cli_main)."""
     parser = build_interrupt_cli_parser(default_model)
     args = parser.parse_args()
     asyncio.run(run_interrupt_sample_cli(client_cls, model_slug, api_sr, args, client_kwargs,

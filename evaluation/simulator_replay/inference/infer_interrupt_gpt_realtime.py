@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_gpt_realtime.py
-
-GPT-Realtime interrupt_user client. Thin subclass of
-realtime_api_interrupt_common -- same session.update as infer_stop_gpt_realtime.py.
-Never edits the stop client.
+GPT-Realtime client for the interrupt_user action. A thin subclass of
+realtime_api_interrupt_common.RealtimeAPIInterruptClientBase, using the same
+session.update as infer_stop_gpt_realtime.py.
 """
 from __future__ import annotations
 
@@ -35,8 +33,7 @@ class InterruptGPTRealtimeClient(RealtimeAPIInterruptClientBase):
     WS_URL = REALTIME_WS_URL
     CHUNK_MS = 20
     API_SR = API_SR
-    # OpenAI is the only provider of the four that accepts this -- see the
-    # base class's SUPPORTS_ITEM_TRUNCATE comment.
+    # Only OpenAI accepts conversation.item.truncate; see the base class.
     SUPPORTS_ITEM_TRUNCATE = True
 
     def build_session_update(self):

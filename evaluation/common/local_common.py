@@ -1,38 +1,21 @@
 #!/usr/bin/env python3
 """
-common/local_common.py
-==========================================
-Shared infrastructure for locally-hosted open-source duplex models, used
-alongside `realtime_common.py` (which every model client -- closed- or
-open-source -- still uses for `RealtimeClientBase` / `SynchronizedRecorder`
-/ `EventLogger`).
+Shared infrastructure for locally hosted open-source duplex models, used
+alongside `realtime_common.py`.
 
-Provides:
-  - LocalServerManager   : lazily launches a model's own local server (e.g.
-                            `python -m moshi.server`) as a background
-                            subprocess ONCE per job (not once per sample --
-                            model load can take minutes), waits until it
-                            accepts TCP connections, and tears it down at
+  - LocalServerManager    : launches a model's local server (e.g.
+                            `python -m moshi.server`) once per process, waits
+                            until it accepts TCP connections, and stops it at
                             interpreter exit.
-  - env_for_model()       : per-model HF cache / checkpoint env-var overrides,
-                            enforcing the project's environment-isolation
-                            policy (never touches ~/.cache).
-  - opensource_root_for   : canonical opensource_models/<slug>/ layout.
-  - BatchReplayClientBase : for models with NO incremental streaming API at
-                            all (e.g. Voila-Autonomous's public
-                            `run_generate()`, a single synchronous call over
-                            the whole clip) -- see its own docstring.
+  - env_for_model()       : per-model HF cache / checkpoint env-var overrides
+                            (keeps weights out of ~/.cache).
+  - opensource_root_for() : opensource_models/<slug>/ layout.
+  - BatchReplayClientBase : for models with no incremental streaming API
+                            (one synchronous call over the whole clip).
 
-Design note: unlike the closed-source clients, a local model server is
-expensive to start (loading + warming up multi-GB weights takes anywhere
-from 30s to several minutes) and typically supports only one *useful*
-concurrent session (most open-source servers serialize model access with a
-lock internally, e.g. Moshi's `asyncio.Lock`). So the server is started
-once, lazily, on the first sample of a batch job, and reused by every
-subsequent sample in that same process -- run_inference.py's existing
-per-sample loop and --workers flag are otherwise unchanged (just run with
---workers 1 for local models, so samples are naturally serialized instead
-of piling up unused connections).
+Local servers are slow to start and usually serialize model access
+internally, so the server is reused across all samples in a process; run
+local models with `--workers 1`.
 """
 
 from __future__ import annotations
@@ -75,25 +58,15 @@ def opensource_root_for(slug: str) -> Path:
 def env_for_model(slug: str, extra: Optional[dict] = None) -> dict:
     """
     Env-var overrides that redirect a model's HF cache to its own
-    opensource_models/<slug>/checkpoints/ directory -- enforces the
-    environment-isolation policy (weights are never cached under the
-    default ~/.cache/huggingface, and never shared between models).
+    opensource_models/<slug>/checkpoints/ directory, so weights are never
+    cached under ~/.cache/huggingface or shared between models.
     """
     ckpt_dir = opensource_root_for(slug) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    # TRANSFORMERS_CACHE and HUGGINGFACE_HUB_CACHE MUST point at the same
-    # physical directory ("hub/"), not siblings: `transformers`' own legacy
-    # loaders (e.g. AutoImageProcessor.from_pretrained() inside
-    # build_vision_tower(), used by infer_vita15.py) pass
-    # cache_dir=TRANSFORMERS_CACHE straight through to hf_hub_download(),
-    # while raw huggingface_hub calls elsewhere (snapshot_download() with no
-    # explicit cache_dir) default to HUGGINGFACE_HUB_CACHE -- if those two
-    # env vars point at different directories, a checkpoint downloaded via
-    # one code path silently isn't found by the other (this exact bug
-    # broke VITA-1.5's InternViT vision-tower load: it downloaded fine into
-    # the old separate "transformers/" dir was empty, "hub/" had the real
-    # snapshot). Same root cause as the MiniCPM-o 4.5 HF-cache-isolation fix
-    # documented elsewhere in this project.
+    # TRANSFORMERS_CACHE and HUGGINGFACE_HUB_CACHE must be the same directory:
+    # some transformers loaders pass cache_dir=TRANSFORMERS_CACHE to
+    # hf_hub_download(), while snapshot_download() defaults to
+    # HUGGINGFACE_HUB_CACHE, and each would otherwise miss the other's files.
     env = {
         "HF_HOME":                str(ckpt_dir),
         "HUGGINGFACE_HUB_CACHE":  str(ckpt_dir / "hub"),
@@ -143,11 +116,10 @@ atexit.register(_terminate_all)
 
 class LocalServerManager:
     """
-    Lazily launches (once per process, cached by `key`) a model's own local
-    server as a background subprocess, and blocks (off the event loop, via
-    `asyncio.to_thread`) until it accepts TCP connections on `port` -- or
-    raises if it exits early or never becomes ready within
-    `startup_timeout_s`.
+    Launches a model's local server as a background subprocess (once per
+    process, cached by `key`) and waits off the event loop until it accepts
+    TCP connections on `port`. Raises if it exits early or is not ready
+    within `startup_timeout_s`.
     """
 
     @staticmethod
@@ -219,37 +191,15 @@ class LocalServerManager:
 
 class BatchReplayClientBase(abc.ABC):
     """
-    For models with NO incremental/real-time streaming API whatsoever --
-    e.g. Voila-Autonomous, whose only public entry point
-    (`VoilaAutonomousModel.run_generate`) is a single synchronous call that
-    consumes the entire pre-tokenized input in one autoregressive loop with
-    no wall-clock pacing, and returns the complete response only once
-    finished. Contrast with `RealtimeClientBase` (realtime_common.py),
-    which drives genuinely incremental clients (websocket frames,
-    streaming_prefill/generate chunks) in real wall-clock time via
-    `SynchronizedRecorder`.
+    For models with no incremental streaming API, e.g. Voila-Autonomous,
+    whose only entry point (`VoilaAutonomousModel.run_generate`) consumes the
+    whole input in one call and returns the complete response. Real-time
+    clients use `RealtimeClientBase` (realtime_common.py) instead.
 
-    Precedent for not forking the model to add fake real-time pacing: even
-    Voila's own authors only ever exercise the autonomous checkpoint via
-    one batch call over a full pre-recorded clip -- their official
-    `gradio_demo.py` doesn't use the autonomous checkpoint for live
-    interaction at all (it loads the turn-based `Voila-chat` model
-    instead). So calling the model once per sample here doesn't sacrifice
-    any real-time rigor the original implementation had, since it never
-    had any to begin with.
-
-    Segmentation caveat: because there's no incremental delivery to watch
-    "is there audio in the pipe right now" on (unlike
-    SynchronizedRecorder's automatic tracking, or Moshi's/MiniCPM's
-    explicit per-chunk speaking signals), `model_speech_segments` here are
-    reconstructed post-hoc via simple RMS-energy thresholding over the
-    full returned waveform -- a coarser, heuristic substitute for a real
-    "is speaking" signal, and the whole reason this is a *last-resort*
-    fallback category rather than the default. Tune SILENCE_RMS_DBFS /
-    MIN_GAP_S / MIN_DUR_S per model after inspecting real smoke-test
-    output (same kind of calibration infer_moshi.py's
-    MOSHI_SILENCE_GRACE_S and infer_minicpm_o.py's is_listen handling
-    needed).
+    Unless the subclass provides a native speaking signal via
+    `_native_segments()`, `model_speech_segments` are reconstructed from the
+    returned waveform by RMS-energy thresholding (SILENCE_RMS_DBFS,
+    MIN_GAP_S, MIN_DUR_S; tune per model).
     """
     MODEL_SLUG: str = "unknown"
     OUTPUT_SR: int = 16_000
@@ -269,14 +219,10 @@ class BatchReplayClientBase(abc.ABC):
     @classmethod
     async def warmup(cls) -> None:
         """
-        Optional one-time, untimed hook run by run_inference.py exactly once
-        per process, BEFORE the per-sample SAMPLE_TIMEOUT_OVERHEAD_S-guarded
-        loop starts. Default no-op. Override for clients that cache an
-        expensive resource at the CLASS level (e.g. a multi-GB local
-        checkpoint) whose one-time load cost can alone exceed a single
-        sample's timeout budget -- see run_inference.py's WARMUP_TIMEOUT_S
-        comment for the exact failure mode this prevents (concurrent
-        duplicate loads racing each other into GPU OOM after a timeout+retry).
+        Optional one-time hook run by run_inference.py once per process,
+        before the per-sample timeout applies. Default no-op. Override for
+        clients that load an expensive class-level resource (e.g. a multi-GB
+        checkpoint) whose load time could exceed one sample's timeout.
         """
         return None
 
@@ -304,15 +250,8 @@ class BatchReplayClientBase(abc.ABC):
 
         native_segments = self._native_segments()
 
-        # Pad up to input_duration if the model returned less audio than
-        # that (silence-fill, same convention as the real-time clients'
-        # output.wav) -- but never truncate: unlike input_duration (a fixed
-        # property of the input clip), the model's own reply is allowed to
-        # run past it, exactly as the real-time clients let trailing speech
-        # extend beyond input_duration for as long as the model keeps
-        # talking (see RealtimeClientBase.run_sample -- it only pads up to
-        # input_duration if the client finished early, it never cuts a
-        # still-speaking model off at that mark).
+        # Pad with silence up to input_duration, but never truncate: as in the
+        # real-time clients, the reply may run past input_duration.
         if len(output_f32) < target_samples:
             output_f32 = np.concatenate(
                 [output_f32, np.zeros(target_samples - len(output_f32), dtype=np.float32)]
@@ -374,26 +313,19 @@ class BatchReplayClientBase(abc.ABC):
 
     def _native_segments(self) -> Optional[list[tuple[float, float]]]:
         """
-        Optional override: if the subclass's just-completed
-        `_generate_batch()` call captured an EXACT model-native
-        speaking-state signal (e.g. Voila's `streamer=` hook into
-        `run_generate`, which exposes the same internal `speaking` boolean
-        the model itself tracks -- see infer_voila.py), return the
-        resulting segments here instead of falling back to the base
-        class's coarse energy-threshold heuristic. Called immediately
-        after `_generate_batch()` returns. `None` (the default) means "no
-        native signal available for this model, use energy thresholding."
+        Optional override, called right after `_generate_batch()`: return
+        segments from a model-native speaking signal captured during that
+        call (e.g. Voila's `streamer=` hook, see infer_voila.py). `None`
+        (the default) means use energy thresholding.
         """
         return None
 
     @abc.abstractmethod
     async def _generate_batch(self, input_pcm: np.ndarray, input_duration_s: float) -> np.ndarray:
         """
-        Model-specific: run the model's own one-shot batch generation over
-        the WHOLE input_pcm (int16 @ self.INPUT_SR) and return the model's
-        full response waveform as float32 in [-1, 1] @ self.OUTPUT_SR,
-        assumed frame-aligned 1:1 with input_pcm's own timeline (i.e.
-        output sample i corresponds to conversation-time i/OUTPUT_SR) --
-        the base class pads/truncates to input_duration_s afterward.
+        Run one-shot generation over the whole input_pcm (int16 @ INPUT_SR)
+        and return the response as float32 in [-1, 1] @ OUTPUT_SR, aligned
+        with the input timeline (output sample i is at time i/OUTPUT_SR).
+        The base class pads it to input_duration_s.
         """
         raise NotImplementedError

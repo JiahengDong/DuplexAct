@@ -1,45 +1,27 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/interrupt_controller.py
-==========================================================
-Live monitor for the `interrupt_user` Level-2 action ONLY.
+Live monitor for the `interrupt_user` action.
 
-This file is deliberately isolated from trigger_controller.py /
-cue_action_common.py / infer_stop_*.py -- those drive stop / hold_floor /
-respond_and_recover and must stay unchanged. Importing a few constants
-from trigger_controller (DECISION_MODEL, poll_interval_for_native_chunk,
-ends_at_sentence_boundary) is read-only reuse, not a behavior change
-there.
+The simulator plays one continuous user utterance (the dataset's
+branch_ignored.wav, i.e. transcript_user_full) and the model may barge in.
+Whether the simulated user stops talking is an LLM judgment rather than "the
+model started speaking", because many duplex models emit early filler or
+backchannels that are not real interruptions.
 
-Roles (confirmed 2026-09-06, LLM-stop redesign 2026-09-07,
-  one-clip playback 2026-09-17):
-  The simulator plays ONE continuous user utterance (dataset
-  branch_ignored.wav == transcript_user_full). The MODEL may barge in.
-  WHEN the simulator stops talking is an LLM judgment -- not a
-  hard-coded `current_speaking_duration() > 0` rule -- because many
-  duplex models emit early filler/backchannel ("how are you doing?")
-  that is NOT a real interruption. Confirmed on the first Moshi pilot:
-  hardcoded onset truncated at t≈0.45s vs t_target 15-22s.
+While the model is speaking, the LLM (DECISION_MODEL, shared with
+LiveTriggerController) is polled with "is the model trying to take the turn?"
+Greetings, backchannels and filler -> stop=false. Any other intentional
+take-turn speech, on-topic or not -> stop=true, and the rest of the user audio
+is dropped with truncate_pending(). The model is not required to match
+reference_interruption_text or l3_condition.
 
-  The LLM (same DECISION_MODEL as LiveTriggerController, gpt-5.4) is
-  polled only while the model is actually speaking, and answers: "is
-  the model trying to TAKE THE TURN (user should stop NOW)?" Greeting /
-  backchannel / filler -> stop=false. Any other intentional take-turn
-  speech (on-topic or not; help or not) -> stop=true, then
-  truncate_pending() immediately. Do not require matching
-  reference_interruption_text or l3_condition.
+Outcomes:
+  ACKNOWLEDGED -- the LLM said stop; the pending user-speech tail is dropped.
+  IGNORED      -- the utterance finished (plus a short grace) without a stop.
 
-`t_target` is a scoring annotation only -- not a playback cut. The
-clip is never split at t_target and is never replayed.
-
-Outcomes after that decision:
-  ACKNOWLEDGED -- LLM said stop; pending user-speech tail is dropped.
-  Nothing else is appended.
-  IGNORED -- the full utterance finished (+ a short grace) without an
-  LLM stop. Filler-only model speech correctly lands here.
-
-Scored T_i/B_i still come from recorder model_speech_segments vs
-metadata t_target, not from this controller's poll timestamp.
+`t_target` is a scoring annotation only; the clip is never cut there. Scores
+come from the recorder's model_speech_segments vs metadata t_target, not from
+this controller's poll timestamps.
 """
 from __future__ import annotations
 
@@ -54,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "common"))
 
 from realtime_common import DynamicPCMSource, SynchronizedRecorder  # noqa: E402
-from trigger_controller import (  # noqa: E402  -- read-only imports, no edits
+from trigger_controller import (  # noqa: E402
     DECISION_MODEL, POLL_INTERVAL_S, MIN_SPEAKING_S, MAX_RETRIES, RETRY_BACKOFF_S,
     ends_at_sentence_boundary,
 )
@@ -128,19 +110,16 @@ class InterruptMonitorController:
         self.max_post_onset_wait_s = max_post_onset_wait_s
         self.speech_chars_per_s = speech_chars_per_s
 
-        # Same split as LiveTriggerController: everything the provider has sent
-        # vs. the prefix whose audio the listener has heard. The gate below is
-        # already ear-based (recorder.current_speaking_duration), so leaving the
-        # text ungated asked the LLM to rule "real interruption or backchannel"
-        # on a whole sentence when only its first word had been played.
+        # As in LiveTriggerController: all text the provider has sent vs. the
+        # prefix whose audio the listener has heard. The LLM only sees the
+        # heard prefix, matching the audio-based speaking gate.
         self._text_full = ""
         self._released_chars = 0
         self._release_audit: dict = {}
 
     def on_text(self, text: str, at_s: Optional[float] = None) -> None:
-        # Same concatenation rule as LiveTriggerController.on_text (read-only
-        # reuse of the convention, not a change there): Moshi tokens already
-        # carry their own leading space at word boundaries.
+        # Same concatenation rule as LiveTriggerController.on_text: Moshi
+        # tokens already carry their own leading space at word boundaries.
         if text:
             self._text_full += text
 
@@ -234,7 +213,7 @@ class InterruptMonitorController:
         return False, f"llm_error:{type(last_exc).__name__}: {last_exc}"
 
     def _finish_ignored(self, t_end: float) -> dict:
-        # Full utterance already in the source. Do not replay it.
+        # The full utterance is already in the source; nothing is replayed.
         self._log("ignored", {"t": round(t_end, 4), "outcome": "ignored"})
         return {
             "t_model_onset_detected": None,

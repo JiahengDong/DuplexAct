@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_grok_voice.py
-
-xAI Grok Voice interrupt_user client. Thin subclass of
-realtime_api_interrupt_common -- same session.update as infer_stop_grok_voice.py.
-Never edits the stop client or the direct_replay grok client.
+xAI Grok Voice interrupt_user client: a thin subclass of
+realtime_api_interrupt_common with the same session.update as
+infer_stop_grok_voice.py.
 """
 from __future__ import annotations
 

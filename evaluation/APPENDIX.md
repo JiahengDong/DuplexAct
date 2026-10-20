@@ -223,7 +223,7 @@ Judge sees: condition prompt, user speech during or after the wait, model respon
 
 **Immediate.** No window around the human `bc_start`. User speech is `[clip_start, clip_end]`.
 
-1. **Candidate detection** (automatic). A segment of $\le 3$ words whose onset falls in that interval. Type is ignored. The first such event is the candidate. This is a detector, **not** a score: it over-fires on the truncated openings of full turns, so it is reported only as the `rule` column of the decomposition in `IMMEDIATE_V2.md`.
+1. **Candidate detection** (automatic). A segment of $\le 3$ words whose onset falls in that interval. Type is ignored. The first such event is the candidate. This is a detector, **not** a score: it over-fires on the truncated openings of full turns, so it is reported only as the `rule` column of the decomposition in `IMMEDIATE.md`.
 2. **Stage 1 — existence** (`gpt-5.4`, text; Section I.9). Rules on whether the candidate is a genuine, self-contained backchannel rather than the clipped start of a turn, unintelligible audio, or speech with no listener-feedback function.
 3. **Stage 2 — function match** (`gpt-audio`; only listening judge). Scored only when stage 1 returned YES. Hears the candidate span cropped from `output.wav` ($\pm 2$ s) with its transcript withheld, and makes a forced binary choice between `affirmative` and `uncertain`. The condition label is **not** shown.
 
@@ -990,7 +990,7 @@ full clear is `cleanup_resources()` at process shutdown. Because TTS is
 delivered pull-on-write — `handle_audio` drains the queue and emits only in
 response to an inbound chunk — whatever a sample fails to pull before
 disconnecting stays queued and is handed to the *next* session on its first
-200 ms chunk. On the 2026-09-19 run this hit 1039 of 1984 samples (52.4%),
+200 ms chunk. Before the patch this hit 1039 of 1984 samples (52.4%),
 which received audio within 50 ms of streaming start, before the first input
 chunk had finished sending; 1038 of those saw a `stop_tts` in the same instant.
 Pull-on-write then kept audio flowing for every subsequent chunk, so the
@@ -1034,7 +1034,7 @@ onset. That leaves one pre-existing issue unaddressed: when consecutive samples
 land on different workers, the first TTS item is skipped regardless. It affects
 the pre-patch data equally and is not something this patch introduces or fixes.
 
-**Verification.** On the patched server (2026-09-20 re-run, the source of every
+**Verification.** On the patched server (the source of every
 VITA-1.5 number reported here), first-segment onset < 0.1 s is 0 of 2000,
 against 52.4% before. The model's characteristic profile is unchanged and
 simply now measurable: 1824 of 2000 samples (91.2%) are a single segment with a

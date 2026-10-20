@@ -304,9 +304,9 @@ def score_pause_onset_takeover(
 ) -> tuple[int, Optional[str]]:
     """Diagnostic only: 1 = a new substantive onset started inside the pause.
 
-    This is the old Wait B_i inverted. It asks whether the pause itself
-    triggered a start, not whether the model was quiet throughout. Do not
-    mix this with floor_holding Immediate when aggregating Wait.
+    Asks whether the pause itself triggered a start, not whether the model
+    was quiet throughout. Do not mix this with floor_holding Immediate when
+    aggregating Wait.
     """
     for on, _off, transcript in _paired_segments(
         model_speech_segments, segment_transcripts

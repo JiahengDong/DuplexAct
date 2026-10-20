@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_raon.py
-
-Raon-SpeechChat interrupt_user client. Separate from infer_stop_raon.py.
-Same duplex_decoding_step + sequences-diff text; InterruptMonitorController.
-Text-decode helpers imported read-only from the stop client.
+Raon-SpeechChat client for the simulator-driven `interrupt_user` action.
+Uses the same duplex_decoding_step loop and sequences-diff text decoding as
+infer_stop_raon.py (helpers imported from there), with an
+InterruptMonitorController instead of the stop trigger.
 """
 from __future__ import annotations
 
@@ -29,7 +28,7 @@ from interrupt_controller import InterruptMonitorController  # noqa: E402
 from interrupt_user_common import (  # noqa: E402
     interrupt_cli_main, POST_BRANCH_OBSERVATION_S, build_interrupt_simulator_speech_segments,
 )
-from infer_stop_raon import (  # noqa: E402  -- read-only helpers/constants
+from infer_stop_raon import (  # noqa: E402
     _resolve_ignored_token_ids, _decode_text_tokens, _f32_frame_to_i16_bytes,
     RAON_SLUG, DEFAULT_MODEL, API_SR, REF_SPEAKER_AUDIO, DEFAULT_SYSTEM_PROMPT,
     RAON_POLL_INTERVAL_S, REPO_DIR,

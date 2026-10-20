@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_grok_voice.py
+xAI Grok Voice client for simulator replay, with the user's interruption
+injected live by the LLM-driven trigger (see trigger_controller.py). A thin
+subclass of realtime_api_stop_common.RealtimeAPIStopClientBase; Grok Voice
+uses OpenAI's GA Realtime schema.
 
-xAI Grok Voice client for the `stop` Level-2 action, simulator-driven
-(live LLM-triggered injection -- see trigger_controller.py's module
-docstring for the full architecture rationale). Thin subclass of
-realtime_api_stop_common.RealtimeAPIStopClientBase -- see that module's
-own docstring for what's shared vs. provider-specific (Grok Voice's wire
-protocol is, per its own docs, essentially the same GA schema as OpenAI's
-Realtime API -- see infer_grok_voice.py's own module docstring).
-
-This file is deliberately a SEPARATE module from
-direct_replay/inference/infer_grok_voice.py (never touches it, never
-imported by it), so the already-validated direct_replay pipeline is never
-affected -- see MODEL_COMPATIBILITY.md's grok-voice entry.
-
-Standalone usage (single sample, for smoke testing):
-    python infer_stop_grok_voice.py --sample_dir <path to Candor_stop_0038 etc> \\
+Standalone usage (single sample):
+    python infer_stop_grok_voice.py --sample_dir <sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -58,11 +48,9 @@ class GrokVoiceStopClient(RealtimeAPIStopClientBase):
         self.voice = voice
 
     def build_session_update(self):
-        # Same shape as infer_grok_voice.py's own session_update -- flatter
-        # than GPT's (voice/instructions/turn_detection at the top level of
-        # "session", not nested under "audio"). No threshold/silence_
-        # duration_ms override, same as the original client -- use xAI's
-        # documented server_vad defaults.
+        # Same shape as infer_grok_voice.py: voice/instructions/turn_detection
+        # sit at the top level of "session". No threshold/silence_duration_ms
+        # override, so xAI's documented server_vad defaults apply.
         return {
             "type": "session.update",
             "session": {

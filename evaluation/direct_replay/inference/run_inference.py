@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/run_inference.py
-============================================
-Unified batch inference driver. Given an action, (optionally) an l3_condition,
-and a model slug, streams every matching sample's input.wav to that model and
-writes the standardized result set:
+Batch inference driver for direct replay. Given an action, an optional
+l3_condition and a model slug, streams every matching sample's input.wav to
+that model and writes:
 
   results/inference_results/<action>/<l3_condition>/<model_slug>/<sample_id>/
     output.wav          # time-aligned model audio
@@ -12,10 +10,9 @@ writes the standardized result set:
     events.jsonl         # raw per-event API log
   results/inference_results/<action>/<l3_condition>/<model_slug>/_run_manifest.json
 
-Sample discovery is manifest-driven: reads data/<action>/manifest.json (written
-by scripts/build_manifests.py), NOT the manifest's `sample_dir` field directly
-(which may be stale after directory moves) -- the sample directory is always
-recomputed as data_root/<action>/<l3_condition>/<sample_id>.
+Samples are listed from data/<action>/manifest.json (written by
+scripts/build_manifests.py); each sample directory is resolved as
+data_root/<action>/<l3_dir>/<sample_id>.
 
 Usage:
     python run_inference.py \\
@@ -25,7 +22,7 @@ Usage:
     # All l3_conditions for an action:
     python run_inference.py --action backchannel --model gpt-realtime-2.1
 
-    # Smoke test on a couple of samples:
+    # A couple of samples only:
     python run_inference.py --action wait --l3_condition floor_holding \\
         --model gpt-realtime-2.1 --limit 2 --verbose
 """
@@ -76,37 +73,26 @@ DEFAULT_RESULTS_ROOT = REPO_ROOT / "evaluation" / "direct_replay" / "results" / 
 
 ACTIONS = ["wait", "backchannel", "ignore", "turn_taking"]
 
-# Per-sample hard timeout (code review F-13): no phase of a realtime session
-# (connect, session handshake, streaming, post-input drain, close) previously
-# had any timeout at all, so a single stalled connection could occupy a
-# worker slot forever and stall the whole batch with no automatic recovery.
-# input_duration covers real-time streaming + drain time; the flat overhead
-# covers connect/handshake/close plus generous headroom.
+# Per-sample hard timeout = input_duration (real-time streaming + drain) plus
+# this flat overhead for connect/handshake/close, so a stalled connection
+# cannot occupy a worker slot forever.
 SAMPLE_TIMEOUT_OVERHEAD_S = 90.0
 
-# One-time, untimed model-load hook: a fresh `client_cls(...)` is built per
-# sample, but some clients cache a heavy model at the class level. The first
-# load can take longer than SAMPLE_TIMEOUT_OVERHEAD_S, and since a load
-# running inside `asyncio.to_thread` cannot be cancelled, a timeout + retry
-# would start a second concurrent load on the same GPU and OOM.
-# `client_cls.warmup()` (no-op by default) pays that cost once up front.
+# Some clients cache a heavy model at the class level. The first load can take
+# longer than the per-sample timeout and cannot be cancelled inside
+# `asyncio.to_thread`, so a timeout + retry would start a second concurrent
+# load on the same GPU. `client_cls.warmup()` (no-op by default) runs once up
+# front with this separate timeout.
 WARMUP_TIMEOUT_S = 900.0
 
-# Per-model override for SAMPLE_TIMEOUT_OVERHEAD_S: a slow local client can
-# set a larger overhead as a class attribute instead of raising the shared
-# default, which would mask stuck connections for the API-based models.
+# A slow local client can override this via a TIMEOUT_OVERHEAD_S class
+# attribute instead of raising the shared default for API-based models.
 DEFAULT_TIMEOUT_OVERHEAD_S = SAMPLE_TIMEOUT_OVERHEAD_S
 
-# Metadata `input_duration` vs. the actual input.wav duration should always
-# match exactly (both are produced together for each sample) -- a
-# mismatch beyond this means something is stale/corrupt (F-17) and streaming
-# it anyway would silently shift every downstream timestamp. Tolerance is
-# frame-level, not "large enough to never trip" (code review R-07: the
-# original 1.0s let a mismatch material to turn-taking/backchannel/wait/
-# overlap timing pass silently). 20ms covers metadata.json's own 2-decimal
-# rounding (up to 5ms) plus resampling/soundfile read precision, with margin
-# -- anything beyond that reflects a genuinely stale or corrupt pairing, not
-# normal float noise.
+# Max allowed difference between metadata `input_duration` and the actual
+# input.wav duration; a larger mismatch means stale/corrupt data and would
+# shift every downstream timestamp. 20ms covers metadata.json's 2-decimal
+# rounding plus resampling/read precision.
 DURATION_MISMATCH_HARD_S = 0.02
 
 
@@ -126,9 +112,8 @@ def filter_unrunnable(
     verbose: bool,
 ) -> tuple[list[dict], dict[str, list[str]]]:
     """
-    Drop entries whose metadata.json is missing the timestamp fields that
-    evaluation/actions/*.py actually needs for B_i/T_i (mirrors
-    validate_data.py's REQUIRED_FIELDS exactly -- single source of truth).
+    Drop entries whose metadata.json is missing the timestamp fields the
+    metrics need for B_i/T_i (as defined by validate_data.py's REQUIRED_FIELDS).
     Returns (runnable_entries, {sample_id: problems} for everything dropped).
     """
     runnable = []
@@ -160,17 +145,10 @@ def save_run_manifest(path: Path, manifest: dict) -> None:
     path.write_text(json.dumps(manifest, indent=2))
 
 
-# Transient, worth-retrying-in-place failures: API-side session/rate-limit
-# rejections and dropped handshakes, observed at scale on grok-voice (60%
-# error rate: "Too many concurrent sessions. Limit is 10") and
-# qwen3.5-omni-flash-realtime (52%: "thread pool exausted max_workers 100",
-# "Requests rate limit exceeded") during the first full-dataset run --
-# these come from OUR concurrency (multiple action-jobs for the same
-# closed-source model running in parallel, see submit_full_run.py), not
-# from anything content-related, so a short backoff-and-retry recovers them
-# without any code/data change. Content-policy rejections (e.g.
-# "inappropriate content") are deliberately excluded -- retrying those
-# would just waste an API call on the same input.
+# Transient failures worth retrying in place: API-side concurrent-session and
+# rate-limit rejections and dropped handshakes (e.g. grok-voice "Too many
+# concurrent sessions", Qwen realtime "thread pool exausted"). Content-policy
+# rejections are excluded since retrying the same input would fail again.
 _RETRYABLE_ERROR_PATTERNS = [
     re.compile(p, re.IGNORECASE) for p in [
         r"too many concurrent sessions",
@@ -199,18 +177,11 @@ def _is_retryable_error(error_text: str) -> bool:
 
 def _existing_result_ok(out_dir: Path) -> bool:
     """
-    True only if a PRIOR run's output.wav + inference_info.json both exist
-    AND that inference completed with no recorded errors. A sample that
-    failed (e.g. transient ConnectionClosedError from an API-side
-    concurrency/rate limit) still gets its inference_info.json written --
-    with empty model_speech_segments and a populated `errors` list -- so a
-    naive file-existence check would treat it as "done" forever and never
-    retry it. Since the evaluation code scores purely off
-    model_speech_segments, a silently-failed sample is indistinguishable
-    from a genuinely silent (successful) one for actions like wait/ignore --
-    this check exists specifically to stop that class of bug from
-    contaminating scores again (see model_docs -- flm-audio port-collision /
-    grok-voice+qwen concurrency-limit incident).
+    True only if a prior run's output.wav + inference_info.json both exist
+    and that inference recorded no errors. A failed sample still gets an
+    inference_info.json (empty model_speech_segments, populated `errors`),
+    which for wait/ignore would be indistinguishable from a genuinely silent
+    model, so it must be retried rather than treated as done.
     """
     output_wav = out_dir / "output.wav"
     info_path = out_dir / "inference_info.json"
@@ -229,44 +200,29 @@ def l3_dir_of(entry: dict) -> str:
     entry["l3_condition"] -- e.g. turn_taking's rubric l3_condition values
     (immediate_take_turn, delayed_take_turn, slight_overlap_take_turn) differ
     from their directory names (take_turn_immediately, take_turn_with_delay,
-    take_turn_with_overlap). We derive the true directory name from the
-    manifest's sample_dir suffix (its absolute root may be stale after
-    directory moves, but the relative structure it encodes is not).
+    take_turn_with_overlap). The directory name is taken from the parent of
+    the manifest's sample_dir (only its relative structure is relied on).
     """
     return Path(entry["sample_dir"]).parent.name
 
 
-# ── Atomic artifact publication (code review R-05) ──────────────────────────
+# ── Atomic artifact publication ──────────────────────────────────────────────
 #
-# Previously output.wav and events.jsonl were passed straight through to
-# client.run_sample() pointing at the FINAL out_dir/ paths, so they were
-# overwritten in place WHILE the client was still running -- only
-# inference_info.json was written after the fact, once run_sample() had
-# already returned successfully. During --overwrite, a timeout or crash
-# partway through a re-run could therefore leave partial/corrupt new audio
-# sitting next to the OLD inference_info.json (which still describes the
-# previous, successful attempt) -- _existing_result_ok() would then
-# incorrectly accept that mixed pair as done. Every attempt now writes to a
-# private temporary sibling directory, gets validated as a whole, and is
-# only swapped into out_dir's place atomically (rename, not copy) once
-# validation passes -- a failed/aborted attempt never touches out_dir at
-# all, so the previous good result (if any) is untouched until a verified
-# replacement is ready.
+# Each attempt writes to a private temporary sibling directory, is validated
+# as a whole, and is then renamed into out_dir's place. A failed or aborted
+# attempt never touches out_dir, so a previous good result is never mixed
+# with partial new audio.
 
 class _SampleLockBusy(Exception):
-    """Another process already holds this sample's lock (R-05)."""
+    """Another process already holds this sample's lock."""
 
 
 class _SampleLock:
     """
     Cross-process advisory lock scoped to one (action, l3, model, sample_id)
-    output directory (R-05: "Add a cross-process sample lock"). Guards
-    against two run_inference.py processes concurrently targeting the same
-    sample -- e.g. an accidental overlapping manual re-run -- which could
-    otherwise interleave temp-dir writes and publish steps against the same
-    out_dir. Non-blocking: if another process holds the lock, raises
-    _SampleLockBusy immediately rather than stalling a worker slot waiting
-    on someone else's in-flight attempt.
+    output directory, so two run_inference.py processes cannot interleave
+    writes and publish steps for the same sample. Non-blocking: raises
+    _SampleLockBusy immediately if another process holds the lock.
     """
 
     def __init__(self, out_dir: Path):
@@ -312,30 +268,15 @@ def _validate_attempt(attempt_dir: Path, expected_output_duration_s: float | Non
     except Exception as e:
         return f"output.wav unreadable: {type(e).__name__}: {e}"
     if expected_output_duration_s is not None:
-        # Generous tolerance (unlike F-17/R-07's input-side check): this is
-        # a self-consistency check between the recorder's own accounting and
-        # the bytes it actually flushed to disk, not a cross-file staleness
-        # check, so it only needs to catch gross truncation/corruption, e.g.
-        # a crash mid-write.
+        # Loose tolerance: this only needs to catch gross truncation of the
+        # recorder's output (e.g. a crash mid-write).
         if abs(wav_info.duration - expected_output_duration_s) > 0.5:
             return (f"output.wav duration={wav_info.duration:.3f}s does not match "
                     f"reported output_duration_s={expected_output_duration_s:.3f}s")
 
-    # events.jsonl is always CREATED (EventLogger.__init__ opens the file
-    # immediately), but is only ever WRITTEN TO when something actually
-    # happens (VAD speech-start, barge-in, response-start, client_error,
-    # ...) -- see EventLogger.log()/.write(). A model that (correctly, per
-    # its own duplex head, or because the input audio is unusually quiet)
-    # never detects speech and never responds produces a fully valid,
-    # crash-free run with a genuinely empty (0-byte) events.jsonl -- this is
-    # NOT the same as "the attempt never even got that far" (that case is
-    # caught by `not events_path.exists()` below, e.g. a hard crash before
-    # EventLogger construction). Confirmed empirically 2026-09-06: freeze-omni
-    # produced 0 events (no VAD 'sl' trigger across the whole padded input)
-    # on several very-quiet backchannel samples (input RMS ~0.005, well
-    # below its Silero-VAD's effective threshold) -- a genuine per-sample
-    # model/VAD limitation, not an infra bug -- yet was being rejected here
-    # and silently dropped from every retry forever. Only require existence.
+    # events.jsonl is created up front but only written to when an event
+    # happens, so a model that never detects speech or responds legitimately
+    # leaves it empty. Only require that it exists.
     if not events_path.exists():
         return "events.jsonl missing from attempt"
     try:
@@ -360,18 +301,10 @@ def _validate_attempt(attempt_dir: Path, expected_output_duration_s: float | Non
 def _gc_orphaned_attempts(model_dir: Path) -> None:
     """
     Best-effort cleanup of `.attempt-*`/`.backup-*` directories left behind
-    by a PRIOR crashed/killed run_inference.py process (a hard kill, e.g.
-    SLURM OOM or node failure, skips Python's `finally` cleanup entirely, so
-    _publish_attempt's own bookkeeping can't guarantee removal by itself).
-    Run once per (action, l3, model) directory at the START of a batch --
-    never mid-batch -- so it can't race an attempt_dir a sibling worker in
-    THIS same process is still using (those are only ever created after this
-    point, and each has a unique uuid suffix regardless).
-
-    Only removes directories, never touches real <sample_id>/ results:
-    `.attempt-*` and `.backup-*` are prefixes _publish_attempt() itself
-    guarantees no real sample_id ever has (sample_id is a plain UUID/slug
-    with no leading dot).
+    by a previously killed process (a hard kill skips `finally` cleanup).
+    Must run at the start of a batch, before any worker creates its own
+    attempt directory. Real <sample_id>/ results never start with a dot, so
+    they are never touched.
     """
     if not model_dir.is_dir():
         return
@@ -421,19 +354,10 @@ async def run_one_sample(
     """
     Returns (sample_id, status, detail_dict).
 
-    Everything from metadata loading through client construction and
-    inference is wrapped in one failure boundary (code review F-12):
-    previously, metadata parsing and `client_cls(...)` construction sat
-    OUTSIDE the try/except, so e.g. a single corrupt metadata.json or a
-    constructor-time error (Qwen's client raises in __init__ if
-    DASHSCOPE_WS_HOST is unset) could propagate all the way up through
-    `_guarded()` and `asyncio.as_completed()` in run_batch(), crashing the
-    entire SLURM job and abandoning every other in-flight/pending sample in
-    that batch instead of just failing this one.
-
-    The whole `client.run_sample(...)` call also now has a hard wall-clock
-    timeout (F-13): no phase previously had any timeout at all, so a stalled
-    connect/handshake/drain/close could occupy a worker slot indefinitely.
+    Metadata loading, client construction and inference share one failure
+    boundary, so a corrupt metadata.json or a constructor error fails only
+    this sample rather than the whole batch. `client.run_sample(...)` runs
+    under a hard wall-clock timeout.
     """
     sample_id    = entry["sample_id"]
     l3_condition = entry["l3_condition"]     # rubric ID, stored verbatim in results
@@ -445,15 +369,12 @@ async def run_one_sample(
         lock = _SampleLock(out_dir)
         lock.__enter__()
     except _SampleLockBusy:
-        # R-05: another process already holds this sample -- most likely an
-        # accidental overlapping manual run rather than normal operation
-        # (job granularity is one process per (model, l3_condition)). Don't
-        # retry or touch anything; just report it distinctly from a real
-        # failure so it isn't miscounted as an error.
+        # Another process is working on this sample; report it separately
+        # so it is not counted as an error.
         return sample_id, "skipped_locked", {"note": f"lock held by another process: {out_dir}"}
 
-    # attempt_dir: every artifact for THIS attempt is written here, never
-    # directly into out_dir -- see the R-05 module note above _SampleLock.
+    # Every artifact for this attempt is written here, never directly into
+    # out_dir (see the note above _SampleLock).
     attempt_dir = out_dir.parent / f".attempt-{sample_id}-{uuid.uuid4().hex[:8]}"
 
     try:
@@ -471,12 +392,9 @@ async def run_one_sample(
                 return sample_id, "error", {"error": "metadata.json missing 'input_duration'"}
             input_duration = float(input_duration)
 
-            # F-17/R-07: the sender streams the actual resampled WAV, while
-            # the recorder target/padding use metadata's input_duration -- a
-            # mismatch changes when input ends relative to the output clock.
-            # Both files are produced together for each sample, so any
-            # real mismatch indicates stale/corrupt data, not a rounding
-            # difference; reject outright rather than silently misalign timing.
+            # The sender streams the actual WAV while the recorder's target
+            # length and padding use metadata's input_duration; a mismatch
+            # would misalign timing, so reject the sample.
             try:
                 actual_duration = sf.info(str(input_wav)).duration
             except Exception:
@@ -539,10 +457,8 @@ async def run_one_sample(
                 result["duration_mismatch_s"] = round(duration_mismatch_s, 4)
             info_path.write_text(json.dumps(result, indent=2))
 
-            # R-05: validate the whole attempt (WAV readable/sane duration,
-            # events.jsonl present and well-formed, JSON parses) BEFORE
-            # publishing -- a validation failure leaves out_dir exactly as
-            # it was (a previous good result, or nothing), never a mix.
+            # Validate the whole attempt before publishing; on failure out_dir
+            # is left exactly as it was.
             reason = _validate_attempt(attempt_dir, inference_dict.get("output_duration_s"))
             if reason is not None:
                 if verbose:
@@ -663,11 +579,8 @@ async def run_batch(
                     error_text = detail.get("error", "")
                     if not _is_retryable_error(error_text):
                         return sample_id, status, detail
-                    # Transient API-side rejection (session/rate limit,
-                    # dropped handshake) -- back off with jitter and retry
-                    # in place, rather than surfacing a failure that would
-                    # silently masquerade as "the model stayed silent" for
-                    # wait/ignore scoring (see _existing_result_ok()).
+                    # Transient API-side rejection: back off with jitter and
+                    # retry in place.
                     delay = RETRYABLE_ERROR_BASE_DELAY_S * (2 ** attempt) + random.uniform(0, 1.0)
                     if verbose:
                         print(f"  [RETRY {attempt + 1}/{RETRYABLE_ERROR_RETRIES}] "
@@ -680,15 +593,9 @@ async def run_batch(
             try:
                 sample_id, status, detail = await coro
             except Exception as e:
-                # Last-resort defense (F-12): run_one_sample/_guarded should
-                # already catch everything, but if some unforeseen exception
-                # still escapes, one sample's failure must never abort the
-                # rest of the batch (previously an uncaught exception here
-                # would propagate out of run_batch() and kill the whole
-                # SLURM job, silently abandoning every other in-flight or
-                # not-yet-started sample). We don't know which sample_id
-                # this was, so it can't be recorded in run_manifest, but the
-                # loop -- and the job -- keeps going.
+                # Last-resort guard so one sample can never abort the batch.
+                # The sample_id is unknown here, so it is not recorded in
+                # the run manifest.
                 print(f"  [UNHANDLED] {type(e).__name__}: {e}", file=sys.stderr)
                 n_err += 1
                 continue

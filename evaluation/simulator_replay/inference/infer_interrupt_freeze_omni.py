@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_freeze_omni.py
-
-Freeze-Omni interrupt_user client. Separate from infer_stop_freeze_omni.py.
-Native VAD barge-in (`state["stop_generate"]` on 'sl' while generating) is
-kept unchanged. InterruptMonitorController decides when WE stop talking.
+Freeze-Omni client for the interrupt_user action, reusing constants and helpers
+from infer_stop_freeze_omni.py. The model's native VAD barge-in
+(`state["stop_generate"]` on 'sl' while generating) is kept;
+InterruptMonitorController decides when the simulated user stops talking.
 """
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ from interrupt_controller import InterruptMonitorController  # noqa: E402
 from interrupt_user_common import (  # noqa: E402
     interrupt_cli_main, POST_BRANCH_OBSERVATION_S, build_interrupt_simulator_speech_segments,
 )
-from infer_stop_freeze_omni import (  # noqa: E402  -- read-only constants/helpers
+from infer_stop_freeze_omni import (  # noqa: E402
     FREEZE_OMNI_SLUG, FREEZE_OMNI_REPO_ID, QWEN2_LLM_REPO_ID, INPUT_SR, OUTPUT_SR,
     CHUNK_SEC, CHUNK_BYTES, CODEC_CHUNK_SIZE, CODEC_PADDING_SIZE, DECODER_TOPK,
     MAX_PAST_TOKENS, FREEZE_OMNI_POLL_INTERVAL_S, DEFAULT_SYSTEM_PROMPT, REPO_DIR,

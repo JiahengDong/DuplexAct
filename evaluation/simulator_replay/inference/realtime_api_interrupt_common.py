@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/realtime_api_interrupt_common.py
-
-interrupt_user sibling of realtime_api_stop_common.RealtimeAPIStopClientBase.
-Never imported by, never edits, the stop file. Same GA Realtime WS receive
-loop; InterruptMonitorController instead of LiveTriggerController.
+interrupt_user counterpart of realtime_api_stop_common.RealtimeAPIStopClientBase:
+the same GA Realtime WebSocket receive loop, driven by
+InterruptMonitorController instead of LiveTriggerController.
 """
 from __future__ import annotations
 
@@ -31,7 +29,7 @@ from trigger_controller import speech_rate_for  # noqa: E402
 from interrupt_user_common import (  # noqa: E402
     POST_BRANCH_OBSERVATION_S, build_interrupt_simulator_speech_segments,
 )
-from realtime_api_stop_common import (  # noqa: E402  -- read-only constants / ProviderError
+from realtime_api_stop_common import (  # noqa: E402
     MAX_WS_MESSAGE_BYTES, TRANSCRIPT_DELTA_TYPES, TRANSCRIPT_DONE_TYPES, ProviderError,
 )
 
@@ -142,28 +140,24 @@ class RealtimeAPIInterruptClientBase(RealtimeClientBase):
                         event_logger.log("recv", etype, {"response_id": current_response_id})
 
                     elif etype == "input_audio_buffer.speech_started":
-                        # Identical policy to realtime_api_stop_common's handler,
-                        # and for the same reason: the provider has told us the
-                        # user is speaking, so its server-side context is
-                        # truncated there and our queued-but-unheard backlog is
-                        # our buffering, not the model. That the model is the one
-                        # meant to be interrupting in THIS action changes neither
-                        # what the provider did nor what the listener hears. If
-                        # the provider then abandons the response because the
-                        # user kept talking, that is the model failing to sustain
-                        # its interruption -- a real outcome, and one the backlog
-                        # would otherwise paper over.
+                        # Same policy as realtime_api_stop_common: once the
+                        # provider reports user speech, our queued-but-unheard
+                        # backlog is flushed, even though in this action the
+                        # model is the one meant to interrupt. If the provider
+                        # then abandons the response because the user kept
+                        # talking, that is the model failing to sustain its
+                        # interruption, and the backlog must not hide it.
                         played_in_item_ms = int(1000 * max(
                             0.0, recorder.played_speech_s() - item_play_start_s
                         ))
                         is_barge_in = (recorder.queued_unplayed_s() > 0.0
                                        or recorder.current_speaking_duration() > 0.0)
                         if is_barge_in:
-                            # response_id deliberately NOT passed: blacklisting
-                            # here would also discard the response's CONTINUED
-                            # deltas, which is how a model expresses that it is
-                            # holding on to its interruption. The blacklist lives
-                            # on the provider's own cancellation in response.done.
+                            # response_id is not passed: blacklisting here would
+                            # also discard the response's continued deltas, which
+                            # is how a model holds on to its interruption. The
+                            # blacklist is applied on the provider's own
+                            # cancellation in response.done.
                             recorder.interrupt(reason="input_speech_during_response")
                             ctrl = controller_holder["controller"]
                             if ctrl is not None:
@@ -225,11 +219,10 @@ class RealtimeAPIInterruptClientBase(RealtimeClientBase):
                                 status, expected_cancel=expected)
                             expecting_cancel = False
                             if status == "cancelled" and resp_id is not None:
-                                # The provider's own signal that this response is
-                                # dead, so a delta still in flight for it must not
-                                # resume playback of suppressed audio. Anchored
-                                # here rather than predicted from speech onset,
-                                # since Grok never reports cancelled at all.
+                                # The provider says this response is dead, so a
+                                # delta still in flight for it must not resume
+                                # playback. Anchored here rather than at speech
+                                # onset, since Grok never reports cancelled.
                                 recorder.interrupt(reason="provider_cancelled",
                                                    response_id=resp_id)
                             event_logger.log("recv", etype, {

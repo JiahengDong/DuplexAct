@@ -1,88 +1,29 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_gemini_live.py
-================================================
 Gemini 3.1 Flash Live (Preview) client, built on the shared
 `RealtimeClientBase` / `SynchronizedRecorder` infrastructure in
 realtime_common.py.
 
-Ported from Full-Duplex-Bench's reference implementation
-(Full-Duplex-Bench/v1_v1.5/model_inference/gemini/inference_gemini31_live.py,
-itself a thin layer over inference_gemini25_native.py) so our results are
-directly comparable in protocol/methodology.
-
-Key characteristics preserved from the FDB reference:
-  - genai.Client(vertexai=False, ...): the public API-key path is the only
-    one that supports gemini-3.1-flash-live-preview today.
-  - `sc.interrupted` maps directly to `recorder.interrupt()` -- Gemini's API
-    tells us explicitly when the model's turn was barged-in on, unlike
-    OpenAI's Realtime API where we have to infer it from speech_started +
-    response-active state.
-
-Deliberate departure from the FDB reference (code review R-01):
-  - FDB's reference script opens a NEW `client.aio.live.connect()` session
-    every time a turn ends (`turn_complete`/`generation_complete`/
-    `interrupted`) and reconnects to send the remaining input. A Live
-    session is designed to carry a full multi-turn conversation over one
-    connection -- reconnecting per turn discards whatever conversational/VAD
-    state the model had, and the handshake for the new connection burns real
-    wall-clock time (empirically ~140ms median, up to ~1s, measured across
-    ~2000 already-collected samples that reconnect on 97.8% of them) during
-    which no input is being sent. Because the absolute send-deadline schedule
-    is anchored once at the start of the sample and never resets, that dead
-    time makes the next several chunks arrive at the server already overdue,
-    so they get sent back-to-back with no pacing to catch back up -- exactly
-    the "faster than real time" failure mode we guard against everywhere
-    else in this benchmark. It also makes Gemini the only one of our four
-    closed-source providers that ever reconnects mid-sample; GPT/Qwen/Grok
-    all stream a sample's entire input over one persistent connection and
-    let the provider's own turn detection (semantic_vad / server VAD) handle
-    however many turns occur within it autonomously.
-  - We now do the same for Gemini: ONE `client.aio.live.connect()` session
-    for the whole sample. `interrupted`/`turn_complete`/`generation_complete`
-    are logged as turn boundaries (each gets its own turn counter, used as
-    the response identity for the R-03 late-delta guard below) but no longer
-    end the session -- the receiver keeps listening across as many turns as
-    occur, exactly like the receive loop in the GPT/Qwen/Grok clients. If the
-    connection itself genuinely drops (a real network error, not a turn
-    boundary), the exception now propagates and fails the sample outright,
-    same as GPT/Qwen/Grok -- run_inference.py's existing sample-level
-    retry-with-backoff (not a second, redundant retry loop inside this
-    client) is what recovers from that.
-
-Difference from the FDB reference (deliberate, for OUR cross-model study):
-  - We DO pass a system_instruction (the same DEFAULT_SYSTEM_PROMPT shared
-    with the other 4 model clients), for apples-to-apples comparability
-    across models in this benchmark. FDB's own 3.1 script omits it
-    ("minimum-config" philosophy, measuring the model fully out-of-the-box).
-    VAD config is still omitted either way -- we rely on the API's
-    documented realtime_input_config defaults, exactly like FDB.
-
-Correctness fix from realtime_direct_replay_code_review.pdf (F-03):
-  - t=0 (the moment `start_streaming()` establishes the recorder/event-log
-    origin) used to be set BEFORE `client.aio.live.connect()` was called, so
-    the WebSocket handshake consumed positive benchmark time before any
-    audio was even sent -- unlike GPT/Qwen/Grok, which all connect first and
-    only then call start_streaming(). This shifted every Gemini timestamp/
-    latency measurement later relative to the other three providers.
-    `start_streaming()` is now called immediately after the connection is
-    open (matching every other client).
-  - F-10: send pacing uses one absolute deadline schedule for the whole
-    sample (anchored at that same t=0), instead of a fixed per-chunk sleep
-    that would drift over a long sample.
-
-Correctness fix from realtime_direct_replay_code_review_updated.pdf (R-10):
-  - `mime_type` now declares the rate explicitly ("audio/pcm;rate=16000")
-    instead of the bare "audio/pcm", matching Google's current examples --
-    the SDK happened to infer 16kHz correctly either way, but the wire
-    declaration was ambiguous.
-
-Post-input cutoff (design decision, supersedes an earlier drain-with-timeout
-heuristic on the receiver): once every input chunk -- including the trailing
-padding -- has been sent, the receiver is cancelled immediately; we no longer
-wait (bounded or otherwise) for a final `turn_complete` to fire. The
-observation window is a hard, fixed cutoff at input_duration, applied
-uniformly across every provider and both model classes.
+Follows Full-Duplex-Bench's Gemini Live reference implementation for
+protocol comparability, with these properties:
+  - genai.Client(vertexai=False, ...): the public API-key path is the one
+    that supports gemini-3.1-flash-live-preview.
+  - `sc.interrupted` maps directly to `recorder.interrupt()`; Gemini reports
+    barge-in explicitly.
+  - ONE Live session for the whole sample. `interrupted` / `turn_complete` /
+    `generation_complete` are logged as turn boundaries (each turn number is
+    the response identity for the late-delta guard) but do not end the
+    session. Reconnecting per turn, as the FDB reference does, would discard
+    conversational/VAD state and stall input pacing during the handshake.
+    A genuine connection drop fails the sample; run_inference.py retries.
+  - A system_instruction (the same prompt as the other clients) is passed;
+    VAD config is left at the API's realtime_input_config defaults.
+  - t=0 is set right after the connection opens, and send pacing uses one
+    absolute deadline schedule anchored there.
+  - `mime_type` declares the rate explicitly ("audio/pcm;rate=16000").
+  - The observation window is a hard cutoff at input_duration (including
+    trailing padding): the receiver is cancelled as soon as all input is
+    sent, the same for every provider.
 """
 
 from __future__ import annotations
@@ -125,8 +66,7 @@ class GeminiLiveClient(RealtimeClientBase):
     INPUT_SR   = SEND_SAMPLE_RATE
 
     def _make_client(self) -> genai.Client:
-        # Ensure routing through the public API-key path, not Vertex AI --
-        # required for gemini-3.1-flash-live-preview (see module docstring).
+        # Public API-key path, not Vertex AI (required for this model).
         return genai.Client(vertexai=False, api_key=self.api_key)
 
     def _build_config(self) -> dict:
@@ -158,11 +98,10 @@ class GeminiLiveClient(RealtimeClientBase):
         total = len(chunks)
         chunk_duration = SEND_CHUNK_SAMPLES / SEND_SAMPLE_RATE
 
-        # R-01: one persistent Live session for the entire sample -- turn
-        # boundaries no longer cause a reconnect (see module docstring).
-        # turn_no increments on every interrupted/turn_complete/
-        # generation_complete boundary and is used as that turn's response
-        # identity for the R-03 late-delta guard below.
+        # One persistent Live session for the entire sample. turn_no
+        # increments on every interrupted/turn_complete/generation_complete
+        # boundary and is that turn's response identity for the recorder's
+        # late-delta guard.
         turn_no = 0
 
         async with client.aio.live.connect(model=self.model_name, config=config) as sess:
@@ -204,9 +143,8 @@ class GeminiLiveClient(RealtimeClientBase):
 
             recv_task = asyncio.create_task(receiver())
 
-            # t=0 for the recorder/event-log timeline starts HERE, right
-            # after the connection is actually open -- matching GPT/Qwen/
-            # Grok (F-03).
+            # t=0 for the recorder/event-log timeline starts here, after the
+            # connection is open, as in the other clients.
             loop = asyncio.get_event_loop()
             send_t0 = await start_streaming()
             idx = 0
@@ -216,9 +154,7 @@ class GeminiLiveClient(RealtimeClientBase):
                 )
                 event_logger.log("send", "realtime_input.audio", n_bytes=len(chunks[idx]))
                 idx += 1
-                # Absolute deadline anchored once at send_t0 (F-10) -- one
-                # persistent session now, so there's no reconnect handshake
-                # to introduce dead time or reset the schedule's baseline.
+                # Absolute deadline anchored once at send_t0.
                 await sleep_until_deadline(loop, send_t0 + idx * chunk_duration)
 
             try:
@@ -227,10 +163,8 @@ class GeminiLiveClient(RealtimeClientBase):
             except Exception:
                 pass
 
-            # Hard cutoff at input end: every input chunk, including the
-            # trailing padding, has now been sent -- cancel reception
-            # immediately rather than waiting any further for a final
-            # turn_complete (see module docstring).
+            # Hard cutoff at input end: all input (including trailing
+            # padding) has been sent, so stop receiving immediately.
             recv_task.cancel()
             try:
                 await recv_task

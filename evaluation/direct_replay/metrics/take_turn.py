@@ -241,7 +241,8 @@ def score_immediate_takeover(
     """Immediate 0/1: any valid onset in the success window.
 
     Returns (score, failure_tag, delta_s). delta_s is the first in-window
-    onset relative to t_user_end, or None if there is no takeover at all.
+    onset relative to t_user_end (the first onset overall if none is in the
+    window), or None if there is no takeover at all.
     """
     onsets = takeover_onsets(model_speech_segments, segment_transcripts)
     if not onsets:

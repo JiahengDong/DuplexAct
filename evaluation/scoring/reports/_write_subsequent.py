@@ -213,11 +213,7 @@ EXP_SCEN = {
 }
 
 
-# Was: BayLing's listen Subsequent withheld because it was scored off ASR of
-# chopped vocoder audio (0.54 words/s). Resolved 2026-09-19 -- the slug now
-# scores off its own native text, reconstructed offline from events.jsonl, hit
-# on 2000/2000 samples, and run_metrics no longer falls back to ASR for
-# LIVE_TRANSCRIPT_MODELS at all. Scope alone decides now.
+# (model, action) cells shown as "—"; determined by the report scope only.
 WITHHOLD_PAIRS: set[tuple[str, str]] = set()
 _SCOPE = report_scope()
 if _SCOPE is not None:
@@ -278,9 +274,9 @@ def main() -> None:
     lines = [
         "# Subsequent results",
         "",
-        "GPT-5.4 text Subsequent (`temperature=0`, JSON YES/NO). Stop Subsequent is automatic from segments (no LLM). Backchannel function-match now sits in **Immediate**, not here: Immediate = 1 requires both that the model backchannelled and that the backchannel carried the condition's function, so this column asks only whether the later response follows on. See `IMMEDIATE_V2.md` and `BC_TWO_STAGE.md`.",
+        "GPT-5.4 text Subsequent (`temperature=0`, JSON YES/NO). Stop Subsequent is automatic from segments (no LLM). Backchannel function-match sits in **Immediate**, not here: Immediate = 1 requires both that the model backchannelled and that the backchannel carried the condition's function, so this column asks only whether the later response follows on. See `IMMEDIATE.md` and `BC_TWO_STAGE.md`.",
         "",
-        "**Inclusion.** Same as Immediate: a cell is shown only if that model finished the **full** action (inference *N* = dataset *N* and metrics cache *N* = dataset *N*). Smoke-only or partial runs are omitted (`—`).",
+        "**Inclusion.** Same as Immediate: a cell is shown only if that model finished the **full** action (inference *N* = dataset *N* and metrics cache *N* = dataset *N*). Partial runs are omitted (`—`).",
         "",
         "**Denominator.** Subsequent is **conditional** on Immediate = 1. Direct Replay (Wait, Ignore, Take turn, Backchannel): denominator is all Immediate = 1; no later response is 0, not N/A; spoke but failed the later check is 0; S = 1 only if the later response meets the action requirement. Immediate fail is excluded. Stop / Hold floor / Recover: among Immediate = 1 **and** speaking-at-cue (forced allowed). Interrupt: among Immediate = 1 (full sample).",
         "",
@@ -288,11 +284,11 @@ def main() -> None:
         "",
         "**Gating.** Every action: Subsequent only if Immediate = 1. Direct Replay: Immediate-success trials with no later response score 0. Simulator extra N/A gates still apply (Stop with no first yield during the cue, no speech after the Hold-floor cue, etc.).",
         "",
-        "**Backchannel *n* collapsed and the rates are not comparable to the previous revision.** The Immediate gate went from the ≤3-word rule to screened-and-function-matched, which cut the conditional population from 685 to 200 — raon holds 124 of those, and most other models are single digits. No sample was re-judged: the new population is a strict subset of the old one, so every Subsequent verdict here was already in the cache. What changed is which verdicts are counted.",
+        "**Backchannel *n* is small.** The conditional population is only the function-matched backchannels, so many cells have a single-digit *n*; do not read a rate off it alone.",
         "",
-        "**Coverage.** Same model roster as Immediate. Closed-source Backchannel Subsequent is often `n/a` because Immediate found no function-matched backchannel, not because ASR is missing.",
+        "**Coverage.** Same model roster as Immediate. Backchannel Subsequent is `n/a` when Immediate found no function-matched backchannel.",
         "",
-        "**Exclusions.** Simulator Stop Subsequent is segment-based. Hold / Recover Subsequent uses live `model_speech_transcripts` (no Whisper). Bayling-duplex Wait / Backchannel / Ignore / Take turn Subsequent is omitted (`—`) until the contiguous-speech re-run + ASR.",
+        "**Sources.** Simulator Stop Subsequent is segment-based. Hold / Recover Subsequent uses live `model_speech_transcripts` (no Whisper).",
         "",
         "Companion Immediate tables: `evaluation/scoring/reports/IMMEDIATE.md`.",
         "",
@@ -300,14 +296,14 @@ def main() -> None:
         "",
         "| Action | Dataset *N* | Subsequent notes |",
         "|---|---:|---|",
-        "| Wait | 600 | Conditional on Immediate; no later response = 0. Bayling withheld. |",
-        "| Backchannel | 400 | Conditional on Immediate (BC produced **and** function matched); no later speech = 0. Bayling withheld. |",
-        "| Ignore | 400 | Conditional on Immediate; no later speech = 0. Bayling withheld. |",
-        "| Take turn | 600 | Conditional on Immediate. Bayling withheld. |",
+        "| Wait | 600 | Conditional on Immediate; no later response = 0. |",
+        "| Backchannel | 400 | Conditional on Immediate (BC produced **and** function matched); no later speech = 0. |",
+        "| Ignore | 400 | Conditional on Immediate; no later speech = 0. |",
+        "| Take turn | 600 | Conditional on Immediate. |",
         "| Stop | 200 | Conditional on Immediate among speaking-at-cue. Live transcript / segments. |",
         "| Hold floor | 891 | Conditional on Immediate among speaking-at-cue. Live transcript. |",
         "| Recover | 1200 | Conditional on Immediate among speaking-at-cue. Live transcript. |",
-        "| Interrupt | 400 | Gated on Immediate. Grok `—`. |",
+        "| Interrupt | 400 | Gated on Immediate. |",
         "",
         "## 1. Model × action",
         "",

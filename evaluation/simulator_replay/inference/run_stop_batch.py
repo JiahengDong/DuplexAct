@@ -1,51 +1,23 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/run_stop_batch.py
-====================================================
-Batch driver for the `stop` Level-2 action's simulator clients
-(infer_stop_<model>.py), across all 200 samples in
-evaluation/data/stop/direct_interruption/.
+Batch driver for the simulator-replay clients (infer_stop_<model>.py) over every
+sample in evaluation/data/stop/direct_interruption/.
 
-Every per-model infer_stop_<model>.py so far only supports single-sample
-CLI invocation (`stop_cli_main`'s own argparse entry point, built for smoke
-testing -- see stop_common.py's module docstring). This script is the
-production-scale sibling: for a given model, iterates every sample,
-constructs the same argparse.Namespace shape `run_stop_sample_cli()` itself
-expects, and calls that SAME underlying function directly (in-process,
-looped) instead of spawning a subprocess per sample -- important for the
-local open-source models (moshi, flm-audio, bayling-duplex, raon-
-speechchat, minicpm-o-4.5, freeze-omni), whose `LocalServerManager.ensure()`
-lazily starts a model server ONCE per process and reuses it for every
-subsequent sample; a subprocess-per-sample design would instead pay a full
-model (re)load on every single sample.
+For each sample it builds the argparse.Namespace that `run_stop_sample_cli()`
+(stop_common.py) expects and calls it in-process, so local models start their
+server once per process and reuse it across samples. Like
+direct_replay/inference/run_inference.py, it skips finished samples, retries
+transient errors, and writes a per-model run manifest. Samples contain
+lead_in.wav / cue.wav / metadata.json.
 
-Deliberately simulator-only, deliberately separate from direct_replay/
-inference/run_inference.py -- reuses its OVERALL shape (skip-if-done,
-retry-on-transient-error, per-model result dir, run manifest) but not its
-code (different per-sample driver contract, different data layout: this
-script's samples have lead_in.wav/cue.wav/metadata.json, not input.wav).
-
-MODEL REGISTRY NOTE -- deliberately excludes models without a real live
-text signal: this benchmark's `stop`-action design requires the trigger
-LLM to make its "when do I inject the cue" decision informed by what the
-model is ACTUALLY SAYING (live text, via `.on_text()`), not blindly off
-speaking-duration alone -- deciding without knowing content is exactly the
-"wired" failure mode flagged 2026-09-06 (per-model text-signal
-availability is tracked in MODEL_COMPATIBILITY.md's own table). Currently
-excluded for this reason:
-  - lychee-fd: confirmed NO token-level text signal exists at all (only
-    native speaking-interval events, which were ALSO found to be
-    unreliable -- see MODEL_COMPATIBILITY.md's SEVERE finding). Its
-    trigger decisions would be made blind to content.
-  - grok-voice: live text signal exists (same MINOR ADJUST as gpt-realtime).
-    Previously excluded for xAI credits; re-registered after direct_replay
-    keys were confirmed present. If the API still returns 400/403 the batch
-    will record errors per sample.
+Only models with a live text signal are registered: the trigger LLM decides
+when to inject the cue from what the model is saying (`.on_text()`). lychee-fd
+has no token-level text signal and is excluded.
 
 Usage:
     python run_stop_batch.py --model moshi --workers 1
     python run_stop_batch.py --model gpt-realtime-2.1 --workers 8
-    python run_stop_batch.py --model raon-speechchat --limit 5 --verbose   # smoke test
+    python run_stop_batch.py --model raon-speechchat --limit 5 --verbose
     python run_stop_batch.py --model minicpm-o-4.5 --overwrite --sample_ids AMI_stop_0000,Candor_stop_0038
 """
 from __future__ import annotations
@@ -86,14 +58,9 @@ REPO_ROOT = _duplexact_root()
 DEFAULT_DATA_ROOT = REPO_ROOT / "evaluation" / "data" / "stop" / "direct_interruption"
 DEFAULT_RESULTS_ROOT = REPO_ROOT / "evaluation" / "simulator_replay" / "results" / "stop"
 
-# Per-sample hard timeout overhead -- same rationale as run_inference.py's
-# SAMPLE_TIMEOUT_OVERHEAD_S (connect/handshake/close + generous headroom on
-# top of real-time streaming duration), but larger here: `stop` samples
-# stream lead_in + wait-for-trigger (T_ONSET_S=5s if never speaks /
-# T_SEARCH_S=8s wall clock from first post-lead-in onset,
-# trigger_controller.py) + cue + POST_CUE_OBSERVATION_S=15.0s
-# (stop_common.py) of drain, on top of connect/handshake -- structurally
-# longer than a direct_replay sample of the same lead-in duration.
+# Per-sample timeout headroom on top of the lead-in duration: covers
+# connect/handshake, the wait for the trigger (trigger_controller.py), the
+# cue, and POST_CUE_OBSERVATION_S (stop_common.py).
 SAMPLE_TIMEOUT_OVERHEAD_S = 120.0
 
 _RETRYABLE_ERROR_PATTERNS = [
@@ -120,10 +87,8 @@ def _is_retryable_error(error_text: str) -> bool:
 
 
 # ── Model registry ───────────────────────────────────────────────────────────
-# Mirrors each infer_stop_<model>.py's own main()/stop_cli_main() call
-# exactly -- see that file for where each field comes from. `local=True`
-# forces workers=1 (the model's own local server serializes internally,
-# and is only ever started once per process -- see module docstring).
+# Each entry mirrors the stop_cli_main() call in infer_stop_<model>.py.
+# `local=True` forces workers=1 (one local model server per process).
 
 @dataclass
 class ModelEntry:
@@ -163,7 +128,7 @@ MODEL_REGISTRY: dict[str, ModelEntry] = {
         local=False, output_sr_attr="OUTPUT_SR", api_key_env="DASHSCOPE_API_KEY",
         client_kwargs={"voice": "Ethan"},
     ),
-    # lychee-fd still excluded: no live text signal for the trigger LLM.
+    # lychee-fd is excluded: no live text signal for the trigger LLM.
 }
 
 

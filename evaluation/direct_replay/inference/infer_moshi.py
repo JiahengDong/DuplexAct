@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_moshi.py
-=========================================
-Kyutai Moshi client, built on the shared `RealtimeClientBase` /
-`SynchronizedRecorder` infrastructure in realtime_common.py, plus
-`local_common.LocalServerManager` for launching Moshi's own server.
-
-Unlike the closed-source clients, Moshi is a locally-hosted model: this
-module launches `python -m moshi.server` once per batch job (model load +
-warmup can take a couple of minutes) and then streams each sample through
-it exactly like a cloud realtime API -- same recorder, same event log, same
-`inference_info.json` shape.
+Kyutai Moshi client. Launches a local `python -m moshi.server` once per
+process (via `local_common.LocalServerManager`) and streams each sample
+through its websocket API like a cloud realtime API.
 
 Protocol (see kyutai-labs/moshi's moshi/moshi/client.py + server.py):
   - On connect, the server sends a single b"\\x00" handshake byte.
@@ -21,15 +13,10 @@ Protocol (see kyutai-labs/moshi's moshi/moshi/client.py + server.py):
     is actually producing a word/punctuation piece. Padding/silence frames
     send no text message at all.
 
-Segmentation caveat (see SynchronizedRecorder.set_speaking's docstring):
-Moshi is a *continuous* full-duplex model -- it never stops emitting an
-audio signal, so `model_speech_segments` cannot be derived from
-audio-presence like the closed-source clients (there is no literal digital
-silence to detect). We derive segments instead from the text-token cadence,
-which is the model's own ground-truth "am I saying a word right now" signal
-at the same 80ms frame granularity as the audio. MOSHI_SILENCE_GRACE_S
-below is the tolerated intra-utterance pause before we consider the
-utterance to have ended -- tune after inspecting real smoke-test output.
+Segmentation: Moshi emits audio continuously, so `model_speech_segments`
+cannot come from audio presence. They are derived from the text-token
+cadence instead (same 80ms granularity); MOSHI_SILENCE_GRACE_S is the
+pause tolerated inside one utterance.
 
 Standalone usage (single sample, for debugging):
     python infer_moshi.py --input_wav path/to/input.wav \\
@@ -52,12 +39,8 @@ import numpy as np
 try:
     import sphn
 except ImportError as e:
-    # Raise rather than sys.exit(1) (code review F-20, applied here too):
-    # SystemExit derives from BaseException, not Exception, so
-    # model_registry.available_models()'s `except Exception` can't catch it
-    # -- confirmed in practice: it was crashing available_models() entirely
-    # whenever this venv's `sphn` wasn't importable from another model's
-    # process, instead of just excluding this one model from the list.
+    # Raise ImportError rather than sys.exit() so that
+    # model_registry.available_models() can catch it and skip this model.
     raise ImportError("sphn not installed. Run: pip install sphn") from e
 
 try:
@@ -79,12 +62,9 @@ API_SR         = 24_000
 FRAME_SAMPLES  = 1_920                 # 80ms @ 24kHz -- Mimi's native frame size
 FRAME_SEC      = FRAME_SAMPLES / API_SR
 
-# Tolerated gap (seconds) in the text-token stream, while an utterance is
-# open, before we consider Moshi to have stopped speaking. Calibrated from
-# smoke-test output: comma/clause pauses within one utterance commonly run
-# ~0.5-0.6s (e.g. "Hello, <0.57s> what's up?"), so the grace period needs to
-# clear that comfortably or a single utterance gets spuriously split into
-# multiple segments at every internal pause. 10 Mimi frames.
+# Gap (seconds) in the text-token stream after which Moshi is considered to
+# have stopped speaking. Clause pauses inside one utterance run ~0.5-0.6s, so
+# this must exceed that to avoid splitting utterances. 10 Mimi frames.
 MOSHI_SILENCE_GRACE_S = 0.8
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
@@ -112,10 +92,8 @@ class MoshiClient(RealtimeClientBase):
             ],
             env=env_for_model(MOSHI_SLUG),
             host=MOSHI_HOST, port=MOSHI_PORT,
-            # Per-job log file (job ID suffix) -- with per-node port isolation
-            # (MOSHI_PORT) two same-model
-            # jobs can legitimately run concurrently on one node; a shared
-            # log path would otherwise interleave their output.
+            # Per-job log file so concurrent servers on different ports
+            # (MOSHI_PORT) do not interleave output.
             log_path=LOG_DIR / f"moshi_server.{os.environ.get('SLURM_JOB_ID', 'local')}.log",
             startup_timeout_s=900.0,
         )
@@ -151,9 +129,8 @@ class MoshiClient(RealtimeClientBase):
                         if pcm_f32.size:
                             await recorder.add(_pcm_f32_to_i16_bytes(pcm_f32))
                             event_logger.log("recv", "audio", n_bytes=len(payload))
-                        # Audio ticks arrive ~every 80ms regardless of
-                        # whether Moshi is currently saying a word, so this
-                        # doubles as our periodic silence-gap check.
+                        # Audio arrives every ~80ms regardless of speech, so
+                        # this doubles as the periodic silence-gap check.
                         if speaking and (now - last_word_t) > MOSHI_SILENCE_GRACE_S:
                             recorder.set_speaking(False, at_s=last_word_t + MOSHI_SILENCE_GRACE_S)
                             speaking = False
@@ -173,13 +150,8 @@ class MoshiClient(RealtimeClientBase):
 
             recv_task = asyncio.create_task(receive_loop())
 
-            # Engage manual segmentation immediately, before any audio can
-            # reach recorder.add() -- otherwise the recorder's automatic
-            # (audio-presence) tracking is briefly live during the window
-            # before Moshi's first real word, and mis-registers its
-            # continuous priming/padding audio as a false "speech segment"
-            # (observed in smoke-test output: a spurious ~0.2s segment
-            # ending well before the first text token).
+            # Switch to manual segmentation before any audio reaches the
+            # recorder, so Moshi's priming audio is not counted as speech.
             recorder.set_speaking(False, at_s=0.0)
 
             await start_streaming()

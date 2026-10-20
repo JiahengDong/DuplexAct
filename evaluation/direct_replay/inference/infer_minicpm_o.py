@@ -1,49 +1,29 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_minicpm_o.py
-==============================================
-OpenBMB MiniCPM-o 4.5 client. Category B (in-process streaming, no network
-server) -- unlike Moshi, MiniCPM-o 4.5's duplex mode is a plain Python
-object (`model.as_duplex()`) exposing a chunk-in/chunk-out method pair
-(`streaming_prefill` / `streaming_generate`) that we drive directly from
-this async client, real-time-paced via `asyncio.sleep`, exactly mirroring
-the closed-source clients' per-chunk send/receive loop -- just without a
-websocket in between.
+OpenBMB MiniCPM-o 4.5 client (in-process streaming, no network server).
+The duplex model (`model.as_duplex()`) exposes a chunk-in/chunk-out pair,
+`streaming_prefill` / `streaming_generate`, which this client drives in real
+time via `asyncio.sleep`.
 
-API reference (from the model's HF card, "Duplex Omni Mode" section --
-https://huggingface.co/openbmb/MiniCPM-o-4_5): the only officially
-documented duplex example is video+audio. We generalize it to audio-only
-by passing `frame_list=[]` every chunk (no video), which the documented
-loop already handles as a valid per-chunk state (`frame_list` is built up
-conditionally and can legitimately be empty). This is our best-effort
-reading of an under-documented audio-only path -- validate/adjust after
-the first real smoke test.
+The model card (https://huggingface.co/openbmb/MiniCPM-o-4_5, "Duplex Omni
+Mode") only documents a video+audio example; audio-only is done by passing
+`frame_list=[]` on every chunk.
 
-Per-chunk cadence: the model's own examples consistently process audio in
-1-second chunks ("For each 1s audio chunk, perform streaming_prefill once
-..."), each followed by one `streaming_generate` call that returns:
-  - "audio_waveform": the model's synthesized speech for this chunk, or
-    None while it is only listening.
+Audio is fed in 1-second chunks, as in the model card. Each
+`streaming_generate` call returns:
+  - "audio_waveform": synthesized speech for this chunk.
   - "is_listen": True while the model has decided not to speak this chunk.
   - "text": the text of any speech produced this chunk.
   - "end_of_turn": True when the model's utterance has just ended.
   - "current_time": the model's own notion of elapsed time (informational).
 
-Because `audio_waveform` is None whenever the model is only listening (see
-the reference example), we can rely on the SAME automatic, presence-based
-segment tracking used by the closed-source clients (recorder.add() only
-when audio is actually produced) -- no need for the explicit
-`recorder.set_speaking()` override that Moshi requires.
+Only chunks with is_listen False are passed to recorder.add(), so the
+recorder's presence-based segment tracking applies.
 
-The official reference clip named in the model card's own example
-(assets/HT_ref_audio.wav) is NOT in the public GitHub repo, but IS present
-as a file in the HF model repo itself -- we fetch it via
-`hf_hub_download("openbmb/MiniCPM-o-4_5", "assets/HT_ref_audio.wav")` once
-and cache a local copy at
-opensource_models/minicpm-o-4.5/repo/assets/HT_ref_audio.wav, so we use
-the exact same reference clip as the documented example (6s, 16kHz mono)
-for `model.prepare(ref_audio=..., prompt_wav_path=...)`'s voice-cloning
-input.
+The voice reference clip from the model card example (assets/HT_ref_audio.wav,
+6s, 16kHz mono) is downloaded from the HF model repo once and cached under
+the model's repo/assets directory; it is used as the voice-cloning input to
+`model.prepare(ref_audio=..., prompt_wav_path=...)`.
 
 Standalone usage (single sample, for debugging):
     python infer_minicpm_o.py --input_wav path/to/input.wav \\
@@ -82,8 +62,7 @@ DEFAULT_PREFIX_PROMPT = "Streaming Omni Conversation."
 
 
 def _ensure_ref_audio(model_name: str) -> Path:
-    """Fetches the model card's own demo reference clip from the HF repo
-    (once; cached at REF_AUDIO_PATH thereafter) -- see module docstring."""
+    """Fetch the model card's reference clip from the HF repo, cached at REF_AUDIO_PATH."""
     if REF_AUDIO_PATH.exists():
         return REF_AUDIO_PATH
     from huggingface_hub import hf_hub_download
@@ -103,9 +82,8 @@ class MiniCPMDuplexClient(RealtimeClientBase):
     OUTPUT_SR  = OUTPUT_SR
     INPUT_SR   = INPUT_SR
 
-    # Class-level singleton: load weights once per batch job (~9B params),
-    # reused across every sample run_inference.py feeds through this
-    # process -- loading takes far longer than any one sample's duration.
+    # Class-level singleton: the ~9B-parameter model is loaded once per
+    # process and reused across samples.
     _model = None
     _model_name_loaded: str | None = None
 
@@ -184,15 +162,9 @@ class MiniCPMDuplexClient(RealtimeClientBase):
 
             audio_out = result.get("audio_waveform")
             has_audio = audio_out is not None and len(audio_out) > 0
-            # Smoke-test finding: MiniCPM-o's audio-only duplex mode returns a
-            # non-None (but near-silent) audio_waveform on almost every chunk,
-            # even while listening -- "audio_waveform is not None" alone is
-            # NOT a reliable speaking signal here (unlike the documented
-            # video+audio example, where it appears to genuinely go None).
-            # result["is_listen"] is the model's own explicit signal (used
-            # exactly this way in the reference example's own print
-            # statement: `"listen..." if result["is_listen"] else "speak> ..."`)
-            # so it takes priority whenever present.
+            # In audio-only mode audio_waveform is non-None (near-silent) on
+            # almost every chunk even while listening, so the model's explicit
+            # is_listen flag takes priority whenever present.
             is_listen = result.get("is_listen")
             if is_listen is None:
                 is_listen = not has_audio
@@ -207,12 +179,9 @@ class MiniCPMDuplexClient(RealtimeClientBase):
             if result.get("end_of_turn"):
                 event_logger.log("recv", "end_of_turn", {"t": round(now, 4)})
 
-            # Absolute-deadline pacing (not a flat post-hoc sleep): if a
-            # chunk's GPU compute overruns CHUNK_SEC, we don't add extra
-            # delay on top -- we just proceed immediately and let the next
-            # iteration's deadline naturally reflect the real elapsed time,
-            # so a model that can't keep up with real-time shows up as
-            # genuinely late output rather than being artificially resynced.
+            # Absolute-deadline pacing: if a chunk's compute overruns
+            # CHUNK_SEC, proceed immediately, so a model that cannot keep up
+            # with real time shows up as late output.
             deadline = t0 + (i + 1) * CHUNK_SEC
             sleep_s = deadline - time.monotonic()
             if sleep_s > 0:

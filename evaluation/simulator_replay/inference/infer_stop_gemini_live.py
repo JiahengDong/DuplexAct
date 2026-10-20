@@ -1,46 +1,23 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_gemini_live.py
+Gemini 3.1 Flash Live (Preview) client for the simulator-driven `stop`
+action (live LLM-triggered cue injection; see trigger_controller.py).
 
-Gemini 3.1 Flash Live (Preview) client for the `stop` Level-2 action,
-simulator-driven (live LLM-triggered injection -- see
-trigger_controller.py's module docstring for the full architecture
-rationale).
+Gemini Live is accessed through the `google-genai` SDK's
+`client.aio.live.connect()` session rather than raw JSON-over-WebSocket, so
+this client implements `_connect_and_stream` directly on
+`RealtimeClientBase` instead of realtime_api_stop_common's shared base.
 
-Unlike GPT-Realtime/Grok Voice (raw JSON-over-WebSocket, both sharing
-realtime_api_stop_common.RealtimeAPIStopClientBase), Gemini Live is
-accessed through the `google-genai` SDK's `client.aio.live.connect()`
-session object (`sess.send_realtime_input(...)` / `async for resp in
-sess.receive()`), so this file implements `_connect_and_stream` directly
-against `RealtimeClientBase` rather than subclassing that shared base --
-same category of provider (a true real-time streaming API, not a
-round/chunk-based local model), just a different wire protocol.
+Connection and session config follow
+evaluation/direct_replay/inference/infer_gemini_live.py (one persistent Live
+session per sample), with the usual `DynamicPCMSource` +
+`LiveTriggerController` layered on top. `output_audio_transcription` is
+enabled so the trigger controller gets live text via
+`sc.output_transcription.text`. The default POLL_INTERVAL_S is used.
 
-Ported from direct_replay/inference/infer_gemini_live.py's connection/
-session-config plumbing (see that file's own module docstring for why it's
-ONE persistent `client.aio.live.connect()` session for the whole sample,
-never reconnecting on turn boundaries -- R-01 fix); this file layers the
-same `DynamicPCMSource` + `LiveTriggerController` pattern used by every
-other stop-simulator client on top of it, and additionally turns ON
-`output_audio_transcription` (the direct_replay client never requests it,
-an explicit MINOR_ADJUST -- see MODEL_COMPATIBILITY.md) so the trigger
-controller gets a real live-text signal via `sc.output_transcription.text`
-instead of falling back to speaking-duration-only polling.
-
-Poll interval: uses trigger_controller.POLL_INTERVAL_S's default (1.0s)
-unmodified -- same reasoning as GPT-Realtime/Grok Voice in
-realtime_api_stop_common.py's own docstring: this is a true real-time
-streaming API, not a round/chunk-quantized local model, so there's no
-"native chunk size" to derive a poll interval from.
-
-This file is deliberately a SEPARATE module from
-direct_replay/inference/infer_gemini_live.py (never touches it, never
-imported by it), so the already-validated direct_replay pipeline is never
-affected -- see MODEL_COMPATIBILITY.md's gemini-3.1-flash-live entry.
-
-Standalone usage (single sample, for smoke testing):
-    python infer_stop_gemini_live.py --sample_dir <path to Candor_stop_0038 etc> \\
-        --output_wav out.wav --events_path events.jsonl
+Standalone usage (single sample):
+    python evaluation/simulator_replay/inference/infer_stop_gemini_live.py \\
+        --sample_dir <sample dir> --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
 
@@ -71,7 +48,7 @@ RECEIVE_SAMPLE_RATE = 24_000   # Gemini Live: output PCM16 at 24kHz
 SEND_CHUNK_SAMPLES  = 1024     # matches infer_gemini_live.py (~64ms/chunk)
 SEND_CHUNK_BYTES    = SEND_CHUNK_SAMPLES * 2
 
-THINKING_LEVEL = "minimal"   # matches infer_gemini_live.py's own default
+THINKING_LEVEL = "minimal"   # matches infer_gemini_live.py
 
 SYSTEM_PROMPT = (
     "You are a helpful and friendly conversational AI assistant. "
@@ -96,18 +73,14 @@ class GeminiLiveStopClient(RealtimeClientBase):
         self.simulator_speech_segments = []
 
     def _make_client(self) -> genai.Client:
-        # vertexai=False required for gemini-3.1-flash-live-preview -- see
-        # infer_gemini_live.py's own module docstring.
+        # vertexai=False is required for gemini-3.1-flash-live-preview.
         return genai.Client(vertexai=False, api_key=self.api_key)
 
     def _build_config(self) -> dict:
         cfg: dict = {
             "response_modalities": ["AUDIO"],
             "thinking_config": {"thinking_level": THINKING_LEVEL},
-            # Turned ON (unlike infer_gemini_live.py) so the trigger
-            # controller gets a real live-text signal -- see module
-            # docstring's "additionally turns ON output_audio_transcription"
-            # note.
+            # Live text for the trigger controller.
             "output_audio_transcription": types.AudioTranscriptionConfig(),
         }
         if self.system_prompt:
@@ -147,10 +120,8 @@ class GeminiLiveStopClient(RealtimeClientBase):
                         if getattr(sc, "interrupted", False):
                             recorder.interrupt(reason="gemini_interrupted",
                                                 response_id=f"turn-{turn_no}")
-                            # Text belonging to the audio just discarded was
-                            # never heard, so it must not stay in front of the
-                            # recover turn's text -- see
-                            # LiveTriggerController.on_interrupt.
+                            # Drop text for the discarded (never heard) audio;
+                            # see LiveTriggerController.on_interrupt.
                             ctrl = controller_holder["controller"]
                             if ctrl is not None:
                                 ctrl.on_interrupt()

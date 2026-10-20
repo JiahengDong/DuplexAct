@@ -1,82 +1,38 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_freeze_omni.py
-==========================================
-VITA-MLLM/Freeze-Omni client. Category B (in-process streaming, no network
-server) -- adapts Full-Duplex-Bench v1.0's own inference glue
-(`Full-Duplex-Bench/v1_v1.5/model_inference/freeze-omni/backchannel.py`,
-`pause_handling.py`, etc.) rather than the official repo's `bin/server.py`
-(a Flask-SocketIO server) or `bin/inference.py` (a bare listen-then-speak
-batch script with no VAD/duplex behavior at all). FDB's own scripts instead
-call Freeze-Omni's official `web/` package (`web.vad.VAD`, `web.pool`,
-`web.queue`) directly in-process -- the SAME modules `bin/server.py` uses
-internally, just without the Flask-SocketIO transport layer wrapped around
-them. We follow that same precedent: import Freeze-Omni's own `models.*` and
-`web.*` packages (cloned verbatim, unmodified) and drive them ourselves with
-`RealtimeClientBase`'s wall-clock pacing instead of FDB's raw
-`threading`+`time.sleep` loop.
+VITA-MLLM/Freeze-Omni client (in-process streaming, no network server).
+Follows Full-Duplex-Bench v1.0's inference scripts: Freeze-Omni's own
+`models.*` and `web.*` packages (`web.vad.VAD` etc.) are imported from the
+cloned repo and driven in-process with `RealtimeClientBase`'s wall-clock
+pacing.
 
-Architecture (arXiv:2411.00774): a frozen Qwen2-7B-Instruct LLM backbone with
-a trainable streaming speech encoder (chunk-wise, 3-stage trained for
-acoustic robustness) and an autoregressive single-codebook speech decoder
-(prefix-tuned, TiCodec-based). A classification head on the LLM's last layer
-predicts one of five states every chunk step -- this IS the model's native
-turn-taking signal, no separate VAD-on-the-model-output needed:
-  'sl' (start listen) / 'cl' (continue listen) / 'el' (end listen -- the
-  model's OWN "invalid break" prediction) / 'ss' (start speak) / 'cs'
-  (continue speak).
+Architecture (arXiv:2411.00774): frozen Qwen2-7B-Instruct backbone, a
+streaming speech encoder, and an autoregressive TiCodec-based speech decoder.
+A classification head predicts one of five states each chunk: 'sl' (start
+listen), 'cl' (continue listen), 'el' (end listen, i.e. invalid break),
+'ss' (start speak), 'cs' (continue speak).
 
-IMPORTANT: there are TWO different "state" signals sharing these same five
-labels, and they must NOT be conflated:
-  - `vad_res["status"]` -- Freeze-Omni's own Silero-VAD wrapper's (`web.vad.
-    VAD`) purely ACOUSTIC classification of the current 160ms chunk (is
-    there speech here, has it been silent long enough to time out). Gates
-    whether/how real audio features get fed to the LLM at all.
-  - `outputs["stat"]` -- the model's OWN duplex-head prediction returned
-    from `speech_dialogue()`. This is the actual turn-taking decision and is
-    NOT set from the VAD's status.
-Forcing `outputs["stat"]` to mirror `vad_res["status"]` (as an earlier
-version of this file did for the 'cl'/'el' case) will eventually feed
-`stat='el'` into `speech_dialogue()`/`recognize()` -- and the vendored
-`models/audioLLM.py`'s `recognize()` has no code path that assigns
-`inputs_embeds` when `stat=='el'` (only 'sl'/'cl' build it via the encoder+
-adapter, 'ss' via the chat-suffix branch), so that call raises
-`UnboundLocalError`. FDB's own `backchannel.py` never makes this
-substitution either -- see the long comments in the VAD-chunk loop below.
+Two signals share these labels and must not be conflated:
+  - `vad_res["status"]`: the Silero-VAD wrapper's acoustic classification of
+    the current 160ms chunk; gates whether audio features go to the LLM.
+  - `outputs["stat"]`: the model's own duplex-head prediction from
+    `speech_dialogue()`, i.e. the turn-taking decision.
+`speech_dialogue()` must never be called with stat='el': `recognize()` has no
+branch that builds `inputs_embeds` for it and raises `UnboundLocalError`.
 
-Genuine duplex, not turn-based: `web.vad.VAD.predict()` is called on every
-160ms input chunk UNCONDITIONALLY, even while the model is mid-response --
-so if the VAD fires 'sl' (user starts talking) while a response is still
-being generated/spoken, that is real-time barge-in, exactly mirroring how a
-closed-source API server signals mid-response cancellation. We reproduce
-FDB's own `force_tts_over` handling: on such a barge-in, the in-flight
-generation thread is signalled to stop and `recorder.interrupt()` is called
-(clearing any queued-but-unwritten TTS audio) -- the same
-`SynchronizedRecorder.interrupt()` used by every closed-source client for
-server-side barge-in, so this model's interruption events are recorded in
-an identical shape.
+VAD runs on every 160ms chunk, including while the model is speaking; a VAD
+'sl' during a response is a barge-in, which stops the generation thread and
+calls `recorder.interrupt()` (FDB's `force_tts_over` behaviour).
 
-Threading model: `models.pipeline.inferencePipeline.speech_dialogue()` and
-`models.decoder.llm2tts.llm2TTS.run()` are both synchronous, blocking CUDA
-calls -- exactly like FDB's own code, response generation ('ss'/'cs' loop +
-TTS decode) runs in a background `threading.Thread` (not `asyncio.to_thread`,
-since we need it to run concurrently with -- not sequentially before -- the
-main input-feeding loop) so that VAD keeps monitoring incoming audio in real
-time while the model is still speaking. The thread pushes decoded PCM chunks
-back into the event loop via `loop.call_soon_threadsafe(recorder.queue.put_nowait, ...)`
-(the same underlying `asyncio.Queue` `SynchronizedRecorder.add()` uses,
-just enqueued directly since `put_nowait` must run on the loop's own thread).
+`speech_dialogue()` and `llm2TTS.run()` are blocking CUDA calls, so response
+generation runs in a background `threading.Thread` concurrently with the
+input loop, pushing PCM into the recorder via `loop.call_soon_threadsafe`.
 
-Segmentation: UNLIKE Moshi/BayLing/Voila/Raon, Freeze-Omni's decoded TTS
-audio is only ever pushed to the recorder while a real response is being
-synthesized -- there is genuine digital silence between utterances (no
-continuously-emitted signal to disambiguate), so `SynchronizedRecorder`'s
-DEFAULT automatic audio-presence segmentation is already correct here, same
-as the closed-source clients. No `set_speaking()` override needed.
+TTS audio is only emitted during a response (digital silence in between), so
+`SynchronizedRecorder`'s default audio-presence segmentation is used.
 
-Weights: `VITA-MLLM/Freeze-Omni` (speech encoder + TTS decoder + codec) AND
-`Qwen/Qwen2-7B-Instruct` (the frozen LLM backbone) -- two separate downloads,
-matching the official repo's own two-checkpoint setup.
+Weights: `VITA-MLLM/Freeze-Omni` (encoder, decoder, codec) and
+`Qwen/Qwen2-7B-Instruct` (LLM backbone).
 
 Standalone usage (single sample, for debugging):
     python infer_freeze_omni.py --input_wav path/to/input.wav \\
@@ -115,8 +71,8 @@ CHUNK_SAMPLES = int(INPUT_SR * CHUNK_MS / 1000)
 CODEC_CHUNK_SIZE = 40
 CODEC_PADDING_SIZE = 10
 DECODER_TOPK = 2
-MAX_PAST_TOKENS = 128      # matches the official bin/inference.py's own hard turn-length cap
-INPUT_TRAILING_PAD_S = 8.0  # see module docstring's "genuine duplex" note -- room to finish speaking
+MAX_PAST_TOKENS = 128      # turn-length cap from the official bin/inference.py
+INPUT_TRAILING_PAD_S = 8.0  # trailing silence so the model has room to finish speaking
 
 REPO_DIR = opensource_root_for(FREEZE_OMNI_SLUG) / "repo"
 if str(REPO_DIR) not in sys.path:
@@ -195,29 +151,16 @@ class FreezeOmniClient(RealtimeClientBase):
             loop.call_soon_threadsafe(recorder.queue.put_nowait, pcm_bytes)
 
         def _decode_and_emit(cur_hidden_state, cur_text) -> None:
-            # Fixed codec_chunk_size/padding for every call (40/10, matching the
-            # official non-duplex bin/inference.py's own decoder() defaults) --
-            # deliberately not replicating server.json's decoder_first_chunk_size
-            # first-pack latency optimization, since that only reduces perceived
-            # time-to-first-audio in the live interactive demo and has no effect
-            # on the resulting waveform content this benchmark actually scores.
+            # Fixed codec chunk/padding (40/10, bin/inference.py's decoder()
+            # defaults); server.json's smaller first-chunk size only affects
+            # demo latency, not the waveform.
             hidden_state_output = torch.cat(cur_hidden_state).squeeze(1)
             cur_text_procced = pipeline.post_process(cur_text)
             token_ids = pipeline.model.tokenizer.encode(cur_text_procced)
             if not token_ids:
-                # post_process can strip cur_text down to nothing -- e.g. the
-                # final flush after the loop breaks right on top of an
-                # incomplete-UTF-8 `continue` (cur_hidden_state already grew
-                # via the unconditional append above the \ufffd check, but
-                # cur_text never got that chunk's new_text). torch.tensor([])
-                # has no elements to infer an int dtype from and defaults to
-                # float32, which then fails embed_tokens's Long/Int check
-                # (confirmed crash: "Expected tensor for argument #1
-                # 'indices' to have one of the following scalar types: Long,
-                # Int; but got torch.cuda.FloatTensor"). There is genuinely no
-                # text to speak here, so skip this chunk instead of crashing
-                # the whole generation thread and losing every already-queued
-                # audio segment for the sample.
+                # post_process can strip cur_text to nothing (e.g. a final
+                # flush right after an incomplete-UTF-8 chunk). There is no
+                # text to speak, so skip rather than embed an empty tensor.
                 return
             embeddings = pipeline.model.llm_decoder.model.embed_tokens(
                 torch.tensor(token_ids, dtype=torch.long).cuda()
@@ -256,11 +199,8 @@ class FreezeOmniClient(RealtimeClientBase):
                     cur_hidden_state.append(cur_outputs["hidden_state"])
                     new_text = cur_outputs["text"][len(last_text):]
                     if "\ufffd" in new_text:
-                        # Incomplete UTF-8 sequence -- do NOT advance last_text,
-                        # so the next iteration re-slices from the same point
-                        # once more tokens resolve it (matches FDB's bare
-                        # `continue`, which likewise skips the trailing
-                        # `last_text = outputs["text"]` update below).
+                        # Incomplete UTF-8 sequence: leave last_text unchanged so
+                        # the next iteration re-slices once more tokens resolve it.
                         continue
                     cur_text += new_text
                     suffix_list = suffix_first if (n_decoded_chunks == 0 or len(cur_hidden_state) >= 20) else suffix_full
@@ -293,10 +233,8 @@ class FreezeOmniClient(RealtimeClientBase):
 
             if status == "sl":
                 if state["is_generate"]:
-                    # Real-time barge-in: user started talking while the model
-                    # was still responding -- signal the generation thread to
-                    # stop and discard whatever's queued-but-unwritten, exactly
-                    # like a closed-source API's server-side cancel.
+                    # Barge-in: user started talking while the model was still
+                    # responding. Stop generation and drop queued audio.
                     state["stop_generate"] = True
                     recorder.interrupt("freeze_omni_vad_barge_in")
                     event_logger.log("recv", "barge_in_detected")
@@ -311,12 +249,9 @@ class FreezeOmniClient(RealtimeClientBase):
                 fresh.pop("hidden_state", None)
 
                 def _prefill_start(fresh=fresh, vad_res=vad_res):
-                    # Mirrors FDB backchannel.py's llm_prefill(is_first_pack=True)
-                    # loop over cached history chunks: each call's resulting stat
-                    # is forced back to 'cl' (masking any premature 'ss'/'el' the
-                    # model might predict while merely replaying already-buffered
-                    # history), so only the FINAL call below (the live edge chunk,
-                    # is_first_pack=False) is allowed to propagate a real 'ss'.
+                    # As in FDB's llm_prefill(is_first_pack=True): replaying
+                    # buffered history chunks forces stat back to 'cl', so only
+                    # the final live chunk can produce a real 'ss'.
                     out = fresh
                     for j, feat in enumerate(vad_res["feature_last_chunk"]):
                         if j == 0 or out["stat"] == "cl":
@@ -330,39 +265,23 @@ class FreezeOmniClient(RealtimeClientBase):
                 event_logger.log("send", "vad_speech_start")
 
             elif status == "cl":
-                # Mirrors FDB's llm_prefill(): only re-poll the model if its OWN
-                # last-returned `outputs["stat"]` is still 'cl' -- do NOT force
-                # `stat` to the VAD's status here. `data["status"]` (this VAD
-                # chunk classification) and `outputs["stat"]` (the model's own
-                # duplex-head prediction) are two DIFFERENT signals that happen
-                # to share label names; conflating them by overwriting one with
-                # the other is exactly what used to feed `stat='el'` into
-                # `speech_dialogue()`/`recognize()` below, which has no code
-                # path that assigns `inputs_embeds` for `stat=='el'` (only
-                # 'sl'/'cl' build it via the adapter, 'ss' via the chat-suffix
-                # branch) -- an `UnboundLocalError`, confirmed on a live smoke
-                # test. FDB never triggers this because it never makes that
-                # substitution either.
+                # Only feed the model if its own last `outputs["stat"]` is still
+                # 'cl'. Do not copy the VAD status into `stat` (see module
+                # docstring: stat='el' crashes recognize()).
                 if outputs.get("stat") == "cl":
                     def _prefill_cont(outputs=outputs, vad_res=vad_res):
                         return pipeline.speech_dialogue(torch.tensor(vad_res["feature"]), **outputs)
 
                     outputs = await asyncio.to_thread(_prefill_cont)
                 if outputs.get("stat") == "el":
-                    # The model's OWN duplex head decided this was an invalid
-                    # break (not the VAD) -- matches FDB's "Detect invalid
-                    # break" branch: just stop treating this as an open dialog,
-                    # take no further model call this tick.
+                    # The model's duplex head predicted an invalid break: close
+                    # the dialog without another model call this tick.
                     vad.in_dialog = False
                     event_logger.log("recv", "invalid_break")
 
             elif status == "el":
-                # Acoustic VAD-level timeout ("no speech long enough"), a
-                # purely acoustic signal -- FDB's llm_prefill() never calls
-                # speech_dialogue()/recognize() for this case either, it only
-                # resets `wakeup_and_vad.in_dialog`. See the long comment in
-                # the 'cl' branch above for why calling the model with
-                # stat='el' crashes.
+                # Acoustic VAD timeout: only reset in_dialog; the model is not
+                # called with stat='el'.
                 vad.in_dialog = False
                 event_logger.log("recv", "vad_timeout")
 
@@ -372,10 +291,8 @@ class FreezeOmniClient(RealtimeClientBase):
                 thread = threading.Thread(target=_generate_thread, args=(gen_outputs,), daemon=True)
                 state["gen_thread"] = thread
                 thread.start()
-                # New turn: the main loop's own `outputs` should go back to
-                # listening state so the next VAD 'cl' tick doesn't re-trigger
-                # generation -- the background thread owns `gen_outputs` from
-                # here, feeding itself via its own speech_dialogue(None, ...) loop.
+                # The generation thread now owns `gen_outputs`; return the main
+                # loop to listening so the next tick does not re-trigger it.
                 outputs["stat"] = "sl"
 
             deadline = t0 + (i + 1) * (CHUNK_MS / 1000.0)
@@ -383,11 +300,8 @@ class FreezeOmniClient(RealtimeClientBase):
             if sleep_s > 0:
                 await asyncio.sleep(sleep_s)
 
-        # Padded input exhausted -- give any in-flight generation a bounded
-        # grace window to finish naturally (it still runs in its own thread
-        # and keeps emitting into the recorder via call_soon_threadsafe; the
-        # recorder itself is what actually stops writing once run_sample's
-        # own wall-clock deadline elapses, same as every other client).
+        # Input exhausted: give in-flight generation a bounded grace window.
+        # The recorder still stops at run_sample's wall-clock deadline.
         grace_deadline = time.monotonic() + 20.0
         while state["is_generate"] and time.monotonic() < grace_deadline:
             await asyncio.sleep(0.2)

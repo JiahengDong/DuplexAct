@@ -1,32 +1,16 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_flm_audio.py
-===========================================================
-CofeAI/FLM-Audio client for the `stop` Level-2 action, simulator-driven
-(live LLM-triggered injection -- see trigger_controller.py's module
-docstring for the full architecture rationale).
+CofeAI/FLM-Audio client for simulator replay, with the user's interruption
+injected live by the LLM-driven trigger (see trigger_controller.py).
 
-FLM-Audio's own direct_replay client (infer_flm_audio.py) documents that
-its wire protocol is a byte-for-byte twin of Moshi's own (same handshake,
-same kind==1 opus-audio / kind==2 non-padding-text-token framing, same
-80ms/1920-sample Mimi frame -- FLM-Audio's server vendors Moshi's own Mimi
-codec + streaming modules verbatim). So this file is, in turn, a close
-structural twin of infer_stop_moshi.py -- same DynamicPCMSource sender
-loop, same LiveTriggerController wiring, same text-token capture -- with
-only the server-launch command and the two known sphn==0.1.4 API
-differences (see infer_flm_audio.py's own module docstring: `append_pcm`/
-`append_bytes` are async/buffered in this older sphn version, requiring the
-separate `read_bytes()`/`read_pcm()` polling loops FLM-Audio's own
-server.py already uses internally) carried over unchanged from
-infer_flm_audio.py.
+FLM-Audio uses Moshi's wire protocol (handshake, kind==1 opus audio, kind==2
+non-padding text tokens, 80 ms / 1920-sample Mimi frames), so this mirrors
+infer_stop_moshi.py. The differences are the server launch command and
+sphn==0.1.4, where `append_pcm` / `append_bytes` only buffer and output must be
+drained with separate `read_bytes()` / `read_pcm()` polling loops.
 
-This file is deliberately a SEPARATE module from infer_flm_audio.py (not a
-subclass override) so the already-validated direct_replay pipeline is
-never touched -- see MODEL_COMPATIBILITY.md's "DIRECT PORT" entry for
-flm-audio.
-
-Standalone usage (single sample, for smoke testing):
-    python infer_stop_flm_audio.py --sample_dir <path to Candor_stop_0038 etc> \\
+Standalone usage (single sample):
+    python infer_stop_flm_audio.py --sample_dir <sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -65,7 +49,7 @@ from stop_common import stop_cli_main, POST_CUE_OBSERVATION_S  # noqa: E402
 
 FLM_AUDIO_SLUG = "flm-audio"
 FLM_AUDIO_HOST = "localhost"
-FLM_AUDIO_PORT = int(os.environ.get("FLM_AUDIO_PORT", "8990"))   # matches infer_flm_audio.py's own default
+FLM_AUDIO_PORT = int(os.environ.get("FLM_AUDIO_PORT", "8990"))   # same default as infer_flm_audio.py
 DEFAULT_MODEL = "CofeAI/FLM-Audio"
 
 API_SR        = 24_000
@@ -73,19 +57,13 @@ FRAME_SAMPLES = 1_920          # 80ms @ 24kHz -- same Mimi frame size as Moshi
 FRAME_SEC     = FRAME_SAMPLES / API_SR
 FRAME_BYTES   = FRAME_SAMPLES * 2   # int16
 
-# Same derivation as MOSHI_POLL_INTERVAL_S in infer_stop_moshi.py -- FLM-
-# Audio's native audio quantum is the identical 80ms Mimi frame, so the
-# tau2-bench 10-tick ratio (see trigger_controller.py) lands on the same
-# 0.8s value.
 FLM_AUDIO_POLL_INTERVAL_S = poll_interval_for_native_chunk(FRAME_SEC)  # 1.0s unified user-side poll
 
-# Same rationale and starting point as infer_flm_audio.py's own
-# FLM_AUDIO_SILENCE_GRACE_S -- FLM-Audio's text channel has the identical
-# "one non-padding token per spoken word/punctuation piece" semantics as
-# Moshi's.
+# Same as FLM_AUDIO_SILENCE_GRACE_S in infer_flm_audio.py: the text channel
+# emits one non-padding token per spoken word/punctuation piece, as Moshi's does.
 FLM_AUDIO_SILENCE_GRACE_S = 0.8
 
-REPO_DIR = opensource_root_for(FLM_AUDIO_SLUG) / "repo"   # same as infer_flm_audio.py's own REPO_DIR
+REPO_DIR = opensource_root_for(FLM_AUDIO_SLUG) / "repo"
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 
 
@@ -111,8 +89,7 @@ class FLMAudioStopClient(RealtimeClientBase):
     async def _connect_and_stream(self, input_pcm: np.ndarray, input_duration: float,
                                    recorder: SynchronizedRecorder, event_logger: EventLogger,
                                    start_streaming) -> None:
-        # `input_pcm`/`input_duration` here are lead_in.wav's, per run_sample()'s
-        # contract (same as infer_stop_moshi.py).
+        # `input_pcm`/`input_duration` are lead_in.wav's.
         await LocalServerManager.ensure(
             key=f"flm-audio:{self.model_name}",
             cmd=[
@@ -156,12 +133,8 @@ class FLMAudioStopClient(RealtimeClientBase):
                     now = time.monotonic() - stream_t0["t"]
 
                     if kind == 1:  # audio (opus)
-                        # sphn==0.1.4: append_bytes() only feeds the encoder
-                        # buffer, it does NOT return decoded pcm -- decoded
-                        # output is drained separately by recv_drain_loop()
-                        # below, polling read_pcm() (see infer_flm_audio.py's
-                        # module docstring for the full sphn version-skew
-                        # explanation).
+                        # sphn==0.1.4: append_bytes() only buffers; decoded
+                        # pcm is drained by recv_drain_loop() via read_pcm().
                         opus_reader.append_bytes(payload)
                         if speaking and (now - last_word_t) > FLM_AUDIO_SILENCE_GRACE_S:
                             recorder.set_speaking(False, at_s=last_word_t + FLM_AUDIO_SILENCE_GRACE_S)
@@ -185,8 +158,7 @@ class FLMAudioStopClient(RealtimeClientBase):
                         event_logger.log("recv", "unknown_kind", {"kind": kind})
 
             async def recv_drain_loop():
-                # Mirrors flmaudio/server.py's own opus_loop() -- see
-                # infer_flm_audio.py's module docstring.
+                # Mirrors opus_loop() in flmaudio/server.py.
                 while True:
                     await asyncio.sleep(0.001)
                     pcm_f32 = opus_reader.read_pcm()
@@ -196,9 +168,8 @@ class FLMAudioStopClient(RealtimeClientBase):
                     event_logger.log("recv", "audio", {"n_samples": int(pcm_f32.shape[-1])})
 
             async def send_drain_loop():
-                # Symmetric write-side counterpart -- append_pcm() below
-                # only feeds the encoder (see infer_flm_audio.py's module
-                # docstring); read_bytes() drains whatever it has produced.
+                # Write side: append_pcm() only feeds the encoder;
+                # read_bytes() drains what it has produced.
                 while True:
                     await asyncio.sleep(0.001)
                     opus_bytes = opus_writer.read_bytes()
@@ -244,9 +215,8 @@ class FLMAudioStopClient(RealtimeClientBase):
                 while True:
                     chunk_i16 = source.pull(FRAME_BYTES)
                     frame_f32 = np.frombuffer(chunk_i16, dtype=np.int16).astype(np.float32) / 32768.0
-                    # sphn==0.1.4: append_pcm() only feeds the encoder buffer
-                    # (always returns None) -- send_drain_loop() above drains
-                    # and actually transmits whatever it has produced so far.
+                    # sphn==0.1.4: append_pcm() only buffers; send_drain_loop()
+                    # transmits the encoded output.
                     opus_writer.append_pcm(frame_f32)
 
                     if source.is_done and cue_drained_at is None:

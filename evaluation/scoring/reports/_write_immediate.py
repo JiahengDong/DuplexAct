@@ -241,7 +241,7 @@ def landing_counts(rows: list[dict]) -> tuple[int, int, int, int]:
 
 
 def drop_never_stopped(model: str) -> bool:
-    """Pad re-run Stop: never_stopped is a real zero. Do not drop."""
+    """Stop's never_stopped is a real zero under the pad protocol, so it is never dropped."""
     return False
 
 
@@ -303,28 +303,20 @@ def main() -> None:
         "",
         "Automatic Immediate scores from `evaluation/scoring/`. Generated from the metrics cache after a full Immediate pass.",
         "",
-        "**Inclusion.** A cell is shown only if that model finished the **full** action: inference count = dataset *N* and Immediate cache count = dataset *N*. Smoke-only or partial runs are omitted (`—`).",
+        "**Inclusion.** A cell is shown only if that model finished the **full** action: inference count = dataset *N* and Immediate cache count = dataset *N*. Partial runs are omitted (`—`).",
         "",
         "**Population.** Listen actions (Wait, Backchannel, Ignore, Take turn) and Interrupt: all scored samples. Stop / Hold floor / Recover: cue landed while the model was **speaking** (post-lead-in turn overlaps cue onset). Forced is allowed. Cue in silence (`no_reply`) or after the model already finished is coverage, not in the denominator. See `CUE_LANDING.md`. `n/a` means the action/condition/scenario was fully run but the scored set is empty.",
         "",
         "**Hold floor Immediate:** max silence gap ≤ 0.50 s in `[t_cue_start, t_cue_end + 1.0]`.",
         "",
         "**Timing (latency / Δ / slack).** 0/1 rates only in this file. Take turn / Backchannel / Stop / Recover / Interrupt diagnostics are in `evaluation/scoring/reports/TIMING.md`.",
-        "**Interrupt does not rank safety competence — do not read it alone.** It requires an onset at least 1.0 s before the user finishes, which a VAD-gated realtime API cannot produce: grok is 0/399 because xAI exposes only energy-based `server_vad` (its median onset is just +1.88 s after the user stops, i.e. a prompt turn-taker that never overlaps), and 70% of `user_speech.wav` clips carry no pause ≥ 500 ms for such a VAD to fire in. The models that score well have no turn-taking policy at all: moshi hit the window 270 times and the Subsequent judge accepted the content **zero** times, while its Ignore is 32.5% against grok's 98.5%. This does not contradict external benchmarks: FDB's \"User Interruption\" and tau2-bench's `I_A` both score the *opposite* direction (user interrupts model; for tau2 interrupting is a penalty, lower better), and grok leads our table there at Stop 100.0% / Recover 80.5%. Pair this column with Subsequent.",
+        "**Interrupt.** Immediate requires an onset at least 1.0 s before the user finishes, which a VAD-gated realtime API cannot produce. Read this column together with Subsequent and Ignore.",
         "",
         "**Stop Immediate exclusion.** `never_stopped` is kept as a real zero. `not_speaking_at_cue` / finished / no_reply are out of the headline denominator for every model.",
         "",
         "**Coverage.** A `—` means that model did not finish the full action.",
         "",
-        "**Backchannel Immediate is two-stage: the model backchannelled, and the backchannel carried the function the condition asked for.** The ≤3-word rule alone is not a behaviour rate. Screening its 685 hits rejected 300 (44%): 148 were the truncated opening of a full turn (`Yeah` followed 0.04 s later by `Yeah that's` / `that's totally understandable`), 91 had no intelligible speech, 61 carried no listener-feedback function. That error is not a constant offset — survival runs from 4% to 97% — so the rule **reorders** the table rather than shifting it, and the old column ranked transcription luck and barge-in alongside backchannelling. Both stages are blind to the condition label, the gold human `bc_text`, and `bc_type_original`; the rule-only column and the screened column are broken out below so the two halves stay separable. Method and per-sample verdicts: `BC_TWO_STAGE.md`.",
-        "",
-        "**Read the small cells as \"about zero\", not as a ranking.** Nine of thirteen scored models land under 1%, where 0.2% is one sample in 400 — bayling, flm, freeze and GPT are each *n*=1 and are not distinguishable from each other. The Subsequent denominators that follow are correspondingly tiny; do not read a Subsequent rate off a single-digit *n*.",
-        "",
-        "**Part of the old zero was transcription loss, and that part is now gone.** Closed-source read a flat 0% while segment text came from the native live transcript; on Whisper ASR the same audio reads 1.2% (GPT) to 12.0% (Gemini) under the rule. Screening keeps that fix — every one of the 65 empty-transcript candidates was rejected by stage 1, and no segment without intelligible speech survives into the headline number.",
-        "",
-        "**vita-1.5 landed on 2026-09-22 and its earlier numbers are gone, not revised.** The previous pass was unscoreable: its output track carried the previous sample's leftover TTS from the server's app-scoped queue, so the recorder opened one ~27s segment at t=0 and every timing-dependent metric read the wrong instant. Those cells (wait 47.9%, backchannel 2.0%, ignore 22.4%, turn_taking 2.3%) were never published. The re-run on the patched server fixed it — first-segment onset < 0.1 s is 0 of 2000, against 52.4% before — and scores wait 91.8%, backchannel 0.0%, ignore 55.5%, turn_taking 8.0%. Do not read the movement as a model improving; the old numbers were produced by another sample's audio.",
-        "",
-        "**vita's Take turn and Backchannel are low for one shared reason.** It answers a median 2.7 s after the user stops and then delivers a single ~22 s segment (362 of 400 backchannel samples have exactly one segment). That misses the Take turn immediate window `[0, 0.5]` and leaves no room for listener feedback at all: the rule flagged 6 of 400 backchannel samples and stage 1 rejected all 6 as the truncated opening of that long turn, four of them the word \"It\" lasting about 0.1 s. It is a turn-taker with no overlap policy, which is a finding about the model, not a gap in the data.",
+        "**Backchannel Immediate is two-stage: the model backchannelled, and the backchannel carried the function the condition asked for.** A ≤3-word segment starting inside the user's turn is only a candidate. Stage 1 (text) confirms it is a backchannel rather than the opening of a full turn; stage 2 (audio) checks that it carries the condition's function. Both stages are blind to the condition label, the human `bc_text`, and `bc_type_original`. The rule-only and screened columns are broken out below. Method and per-sample verdicts: `BC_TWO_STAGE.md`.",
         "",
         "## Expected *N* per model (when complete)",
         "",
@@ -354,7 +346,7 @@ def main() -> None:
         "",
         "## Backchannel: where the rule-only number goes",
         "",
-        "**rule** is the old column, a ≤3-word segment starting inside the user's turn. **screened** is what survives stage 1, i.e. the model really did backchannel. **function** adds stage 2, the backchannel carrying the condition's function, and is the Backchannel column in section 1. Counts are out of the same denominator as the rate.",
+        "**rule** is a ≤3-word segment starting inside the user's turn. **screened** is what survives stage 1, i.e. the model really did backchannel. **function** adds stage 2, the backchannel carrying the condition's function, and is the Backchannel column in section 1. Counts are out of the same denominator as the rate.",
         "",
         "Collapse between *rule* and *screened* is the rule's false positives; collapse between *screened* and *function* is a model that backchannels but cannot make the affirmative/uncertain distinction audible.",
         "",

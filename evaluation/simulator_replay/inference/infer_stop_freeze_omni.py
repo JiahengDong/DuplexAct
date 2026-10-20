@@ -1,54 +1,25 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_freeze_omni.py
+VITA-MLLM/Freeze-Omni client for the simulator-driven `stop` action (live
+LLM-triggered cue injection; see trigger_controller.py).
 
-VITA-MLLM/Freeze-Omni client for the `stop` Level-2 action,
-simulator-driven (live LLM-triggered injection -- see
-trigger_controller.py's module docstring for the full architecture
-rationale).
+Same architecture as direct_replay/inference/infer_freeze_omni.py: the
+native `web.vad.VAD` chunk classifier feeds a duplex-head LLM whose
+`outputs["stat"]` prediction ('sl'/'cl'/'el'/'ss'/'cs') is its turn-taking
+signal, and response generation + TTS decode run in a background thread
+alongside the 160ms VAD-chunk loop. Differences:
 
-Reuses direct_replay/inference/infer_freeze_omni.py's exact architecture
-(see that file's own extensive module docstring for the full writeup:
-Freeze-Omni's native `web.vad.VAD` chunk classifier feeding a duplex-head
-LLM whose OWN `outputs["stat"]` prediction -- 'sl'/'cl'/'el'/'ss'/'cs' --
-IS its native turn-taking signal; response generation + TTS decode runs in
-a background `threading.Thread` concurrently with the main 160ms
-VAD-chunk-feeding loop, exactly like a real duplex server) almost
-unchanged. Two real adaptations were needed (this is the "MINOR ADJUST"
-flagged in MODEL_COMPATIBILITY.md):
+1. Live text: each new text delta from `_generate_thread` is forwarded to
+   `LiveTriggerController.on_text()` via `loop.call_soon_threadsafe`.
+2. Dynamic input: 160ms chunks are pulled from a `DynamicPCMSource` until
+   `POST_CUE_OBSERVATION_S` has elapsed after the cue drains.
 
-1. Live text: `_generate_thread`'s `cur_text` (accumulated inside the
-   background thread from `cur_outputs["text"]` deltas) was already being
-   computed for TTS-decode chunking but never surfaced anywhere else. Added
-   one `loop.call_soon_threadsafe(controller.on_text, ...)` call right next
-   to where `cur_text` is updated (same `call_soon_threadsafe` pattern
-   `_emit_pcm` already uses to push audio from that same background thread
-   back onto the asyncio loop -- `LiveTriggerController.on_text()` is a
-   plain synchronous method, safe to call this way).
-2. Dynamic input: `infer_freeze_omni.py`'s sender loop iterates over a
-   fixed pre-padded `input_pcm` array of known length; here it instead
-   pulls 160ms chunks from a `DynamicPCMSource` until
-   `POST_CUE_OBSERVATION_S` has elapsed after the cue drains (same pattern
-   as every other client here), keeping `infer_freeze_omni.py`'s own
-   post-loop "grace window for in-flight generation to finish" logic
-   verbatim afterward.
+Freeze-Omni's native VAD-triggered barge-in (`recorder.interrupt()` +
+`state["stop_generate"]` on an 'sl' event while generating) is kept as is:
+when the cue overlaps a response, this is what the `stop` action measures.
 
-Freeze-Omni's own native VAD-triggered barge-in handling
-(`recorder.interrupt()` + `state["stop_generate"]` on a live 'sl' VAD
-event while `state["is_generate"]`) is kept COMPLETELY UNCHANGED here --
-when the cue plays while the model is mid-response, this is exactly the
-`stop` action's real test: does the model's OWN native interruption
-mechanism correctly react to real overlapping audio, not a simulated
-approximation of it.
-
-This file is deliberately a SEPARATE module from
-direct_replay/inference/infer_freeze_omni.py (never touches it, never
-imported by it, loads its own independent copy of the model into this
-process) -- see trigger_controller.py's own module docstring for the
-"always a separate module" rule.
-
-Standalone usage (single sample, for smoke testing):
-    python infer_stop_freeze_omni.py --sample_dir <path to Candor_stop_0038 etc> \\
+Standalone usage (single sample):
+    python infer_stop_freeze_omni.py --sample_dir <path to a stop sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -342,8 +313,7 @@ class FreezeOmniStopClient(RealtimeClientBase):
                 if sleep_s > 0:
                     await asyncio.sleep(sleep_s)
 
-            # Same bounded grace window as infer_freeze_omni.py: let any
-            # in-flight generation finish naturally before ending the sample.
+            # Bounded grace window for in-flight generation to finish.
             grace_deadline = time.monotonic() + 20.0
             while state["is_generate"] and time.monotonic() < grace_deadline:
                 await asyncio.sleep(0.2)

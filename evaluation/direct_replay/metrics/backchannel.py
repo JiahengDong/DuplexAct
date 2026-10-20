@@ -1,9 +1,8 @@
 """Backchannel: brief feedback during user speech, then later consistency.
 
-Immediate is the one action this module does not score by itself. The
-automatic part here is only a detector -- the first <= 3-word segment
-starting inside the user's turn -- and that detector is wrong about 44% of
-the time, mostly by keeping the truncated opening of a full turn. The
+This module does not score Immediate by itself. The automatic part here is
+only a candidate detector (the first <= 3-word segment starting inside the
+user's turn), which often keeps the truncated opening of a full turn. The
 reported Immediate is the two-stage judgement in `bc_two_stage_judge.py`:
 stage 1 (`gpt-5.4-2026-03-05`, text only) rules on whether the candidate
 is a genuine backchannel, stage 2 (`gpt-audio`, listening) gives it a
@@ -241,7 +240,7 @@ SUBSEQUENT_JUDGE_QUESTION = (
     "such justification."
 )
 
-# Kept so existing imports of JUDGE_* still resolve to Subsequent.
+# Aliases: JUDGE_* refer to the Subsequent prompts.
 JUDGE_SYSTEM_PROMPT = SUBSEQUENT_JUDGE_SYSTEM_PROMPT
 JUDGE_QUESTION = SUBSEQUENT_JUDGE_QUESTION
 

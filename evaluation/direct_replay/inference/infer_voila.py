@@ -1,62 +1,23 @@
 #!/usr/bin/env python3
 """
-direct_replay/inference/infer_voila.py
-==========================================
-maitrix-org Voila-Autonomous-preview client. Category C (batch-replay, no
-incremental streaming API at all) -- see `BatchReplayClientBase` in
-local_common.py for the design rationale and precedent (even Voila's own
-authors only ever exercise this checkpoint via one batch `run_generate()`
-call over a full pre-recorded clip; their official live demo,
-gradio_demo.py, doesn't use the autonomous checkpoint at all).
+maitrix-org Voila-Autonomous-preview client (batch replay; the model has no
+incremental streaming API, see `BatchReplayClientBase` in local_common.py).
 
-Segmentation is NOT a crude energy-threshold fallback here, though -- it's
-an EXACT reconstruction of the model's own internal `speaking` boolean
-(model.py's `run_generate`, lines ~1290-1345), obtained by passing a custom
-`streamer` object into the *public, already-documented* `streamer=` kwarg
-of `run_generate()`. That parameter receives the model's per-step output
-token (`next_tokens.cpu()`, shape [1, 1, num_codebooks]) once per
-autoregressive step, before we ever see the final result. Codebook 0 of
-that tensor equals `ASSISTANT_TOKEN_ID` on the exact step `speaking` flips
-True, and `eos_token_id` on the exact step it flips back False (mirroring
-model.py's own `if voila_head_pred == 1 and not speaking: ... speaking =
-True` / `elif next_tokens[0] == eos_token_id: speaking = False`) -- so
-reconstructing those two transitions from the streamer callback gives the
-IDENTICAL boolean sequence the model computed internally, not an
-approximation, and does not require touching model.py's generation loop
-itself (streamer.put() is a supported extension point, we just have to
-write our own thin eval_model()-equivalent glue -- infer.py's own
-`eval_model()` is exactly this kind of 80-line glue layer already, just
-without a streamer hook wired in).
+Segmentation reconstructs the model's internal `speaking` flag from
+`run_generate()`'s `streamer=` callback, which receives each step's output
+token ([1, 1, num_codebooks]). Codebook 0 equals ASSISTANT_TOKEN_ID when
+`speaking` turns on and eos_token_id when it turns off.
 
-Frame timeline: this model is a genuine dual-stream (user + assistant)
-full-duplex architecture -- every autoregressive step where the model's
-own text-level prediction resolves to the generic `<au_token>` audio
-placeholder (`AUDIO_MIN_TOKEN_ID <= tok0 < AUDIO_MIN_TOKEN_ID +
-codebook_size` after the placeholder is filled with a real code) both (a)
-advances `input_generator` by exactly one real 40ms user-audio frame and
-(b) counts as one 40ms tick on the shared conversation clock; the rare
-turn-boundary marker steps (the literal ASSISTANT_TOKEN_ID / eos_token_id
-insertions) do neither, so we track a separate `frame_idx` counter (audio
-frames consumed) rather than raw step count for converting to seconds --
-using raw step count would drift the reported segment times later than
-reality by ~1 frame (40ms) per turn boundary, since marker steps don't
-represent elapsed conversation time. frame_rate = 25 Hz is Voila-Tokenizer's
-own EnCodec config (sampling_rate=16000, hop = 8*5*4*4 = 640 ->
-16000/640 = 25).
+Timing: each audio step consumes one 40ms user frame and advances the
+conversation clock by one tick; turn-boundary marker steps do not, so
+segment times use a separate `frame_idx` count of audio steps rather than
+the raw step count. 25 Hz = Voila-Tokenizer's 16000 / (8*5*4*4).
 
-Because generation is a single batch call with no live wall-clock pacing,
-there's no way to know in advance how much *conversation time* the
-returned audio spans until decoding finishes -- so we feed the model
-padded input (original clip + INPUT_TRAILING_PAD_S of trailing silence,
-via voila_input_format's `audio={"array":..., "sr":...}` in-memory path,
-no temp file needed) so it has room to finish speaking after the user's
-turn ends, exactly mirroring how the real-time clients let a model keep
-talking past input_duration for as long as it needs (see
-BatchReplayClientBase.run_sample's pad-but-never-truncate note).
+The input is padded with INPUT_TRAILING_PAD_S of silence so the model has
+room to finish speaking after the user's turn.
 
-Voice cloning reference: `examples/test1.mp3`, bundled in the model's own
-GitHub repo and used as the CLI script's own `--ref-audio` default -- same
-precedent-matching principle as MiniCPM-o 4.5's HT_ref_audio.wav.
+Voice reference: `examples/test1.mp3` from the Voila repo (its CLI default
+`--ref-audio`).
 
 Standalone usage (single sample, for debugging):
     python infer_voila.py --input_wav path/to/input.wav \\
@@ -97,10 +58,8 @@ if str(VOILA_REPO_DIR) not in sys.path:
 
 class _SpeakingTracker:
     """
-    Passed as `streamer=` into VoilaAutonomousModel.run_generate() -- see
-    module docstring for exactly which two token-id transitions this
-    reconstructs and why they exactly match the model's own internal
-    `speaking` state.
+    `streamer=` for VoilaAutonomousModel.run_generate(); reconstructs the
+    model's `speaking` segments (see module docstring).
     """
 
     def __init__(self, assistant_token_id: int, eos_token_id: int,
@@ -146,12 +105,9 @@ def _eval_model_autonomous_streaming(model, tokenizer, tokenizer_voila, history,
                                       ref_embs, ref_embs_mask, max_new_tokens: int,
                                       streamer: _SpeakingTracker):
     """
-    Thin reimplementation of infer.py's `eval_model()`, specialized to
-    model_type == "autonomous" / task_type == "chat_aiao_auto", with one
-    addition: `streamer=streamer` wired into `model.run_generate(...)` (the
-    upstream `eval_model()` doesn't expose this kwarg at all). Everything
-    else -- tensor construction, decode -- is copied verbatim from
-    infer.py so results match what the official script would produce.
+    infer.py's `eval_model()` for model_type "autonomous" / task_type
+    "chat_aiao_auto", with `streamer=` passed to `model.run_generate()`.
+    Tensor construction and decoding follow infer.py.
     """
     import torch
     from tokenize_func import (
@@ -250,11 +206,8 @@ class VoilaAutonomousClient(BatchReplayClientBase):
         from spkr import SpeakerEmbedding
         from infer import disable_torch_init
 
-        # Reimplements infer.py's load_model() with attn_implementation="sdpa"
-        # instead of use_flash_attention_2=True -- avoids a from-source
-        # flash-attn compile in this isolated venv (same tradeoff already made
-        # for MiniCPM-o 4.5, see infer_minicpm_o.py); sdpa is a standard,
-        # always-available HF attention backend, just somewhat slower.
+        # infer.py's load_model(), but with sdpa attention instead of
+        # flash-attn 2 so flash-attn does not need to be installed.
         disable_torch_init()
         model = VoilaAutonomousModel.from_pretrained(
             model_name,
@@ -297,10 +250,8 @@ class VoilaAutonomousClient(BatchReplayClientBase):
         }
 
         padded_duration_s = len(padded) / AUDIO_SR
-        # Generous margin: turn-boundary marker steps (start/eos) don't
-        # advance the audio-frame clock but DO consume a generation step,
-        # and we'd rather waste a few hundred harmless extra steps than
-        # truncate a real reply early (see module docstring).
+        # Margin for turn-boundary marker steps, which consume generation
+        # steps without advancing the audio-frame clock.
         max_new_tokens = int(padded_duration_s * FRAME_RATE_HZ * 1.3) + 200
 
         import torch

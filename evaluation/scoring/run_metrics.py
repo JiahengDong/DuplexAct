@@ -5,7 +5,7 @@ Immediate is automatic. Subsequent is GPT-5.4 (text) except Stop
 (automatic yielding). Backchannel is the exception: what this file
 writes is only the <=3-word candidate detector, and the reported
 Immediate is the two-stage judgement in bc_two_stage_judge.py, joined
-on at report time. Hold floor max gap is 0.50 s (locked).
+on at report time. Hold floor max gap is 0.50 s.
 
 Usage:
     python run_metrics.py --immediate_only
@@ -110,8 +110,9 @@ _SYNTH_SCENARIO_BY_UUID: dict[str, str] | None = None
 
 
 def _synth_scenario_by_uuid() -> dict[str, str]:
-    """Hold floor / Recover prepare scripts originally omitted `scenario`.
-    Recover it from data_synthesize/<task>/<subcat>/<scenario>/<uuid>/."""
+    """Map synthesized Hold floor / Recover source uuids to their scenario,
+    read from data_synthesize/<task>/<subcat>/<scenario>/<uuid>/ (their
+    metadata may lack `scenario`)."""
     global _SYNTH_SCENARIO_BY_UUID
     if _SYNTH_SCENARIO_BY_UUID is not None:
         return _SYNTH_SCENARIO_BY_UUID
@@ -194,17 +195,9 @@ def _native_segment_texts(info: dict, segs: list) -> Optional[list[Optional[str]
 def segment_texts(out_dir: Path, info: dict, segs: list, model: Optional[str] = None) -> list[Optional[str]]:
     model = model or info.get("model")
     if model in LIVE_TRANSCRIPT_MODELS:
-        # Native text or nothing -- deliberately NOT falling through to
-        # asr.json. For these slugs ASR is not a degraded option, it is a wrong
-        # one: over half the frames inside their speaking segments are all-zero
-        # padding, and Whisper returns 0.5-1.2 words/s against a 2.5-3.5
-        # conversational band. Falling back would quietly score a sample on
-        # text known to be unusable, and it would be invisible in the output.
-        # A stale asr.json makes that worse than merely wrong -- raon's direct
-        # replay is being re-run, so its leftover asr.json describe an older
-        # timeline than the segments they would be matched against.
-        # Returning None per segment lets the caller treat the text as absent,
-        # which is the honest answer.
+        # Native text only, never asr.json: these models' speaking segments
+        # are mostly zero padding, so ASR transcripts are unusable. Missing
+        # text is returned as None per segment.
         nat = _native_segment_texts(info, segs)
         return nat if nat is not None else [None] * len(segs)
     asr_p = out_dir / "asr.json"
@@ -231,34 +224,23 @@ def drop_moshi(segs: list, model: str) -> list:
     return sorted(segs, key=lambda s: s[0])[1:]
 
 
-# Slugs too slow to stream in real time, whose recorder therefore timestamps on
-# a dilated wall clock. See to_instance_clock.
+# Models too slow to stream in real time, whose recorder timestamps on a
+# dilated wall clock. See to_instance_clock.
 DILATED_CLOCK_MODELS = {"raon-speechchat"}
 
 
 def to_instance_clock(segs: list, model: str, action: str, inf: dict) -> list:
     """Map segment times onto the clock the instance metadata is written on.
 
-    Direct replay only. Raon needs ~270 ms of wall clock per 80 ms frame, and
-    SynchronizedRecorder fills the gaps by wall clock, so output.wav runs ~2.5x
-    long and every segment time is stretched by that factor. The cue times it is
-    compared against (t1_end, pause_start, bg_speech_start_s) live on the input
-    clip's fixed timeline, so the two decouple and every timing metric reads the
-    wrong instant -- infer_raon.py's docstring flags this, nothing acted on it.
-    Uncorrected, take_turn scored 1.5% against 65.2% here, and wait/ignore were
-    inflated because the model's speech was pushed past the interval it was
-    supposed to stay quiet through.
+    Direct replay only. Raon runs slower than real time and
+    SynchronizedRecorder fills gaps by wall clock, so output.wav is stretched
+    relative to the input clip, while the cue times (t1_end, pause_start,
+    bg_speech_start_s) are on the input clip's timeline. Segment times are
+    scaled by input_duration_s / output_duration_s.
 
-    The simulator is deliberately excluded. There the cue is played by the
-    simulator into the same recording, so cue and model speech share the dilated
-    clock and stay mutually consistent; input_duration_s there is only the user
-    audio, not the session, so this ratio would be meaningless.
-
-    Validated on take_turn_immediately, where the design puts the human takeover
-    0-0.5 s after t1_end: corrected onsets land at median +0.23 s (IQR 0.90),
-    61% inside the window. Stripping the recorder's padding out of the audio
-    instead lands at +3.84 s, because ~half the padding sits inside the speaking
-    segments rather than between them.
+    Simulator replay is excluded: there the cue is played into the same
+    recording, so cue and model speech already share the dilated clock, and
+    input_duration_s covers only the user audio.
     """
     if model not in DILATED_CLOCK_MODELS or action not in DR_ACTIONS or not segs:
         return segs
@@ -427,17 +409,15 @@ def score_one(
     inst = info.get("instance") or {}
     inf = info.get("inference") or {}
     if inf.get("errors"):
-        # The provider never delivered a usable turn (403, 1011, keepalive
-        # timeout, ...), so there is no behaviour to score. Matching
-        # reports/_cue_landing.py, drop the sample instead of letting a
-        # transport failure masquerade as a model that stayed silent. Any
-        # entry an earlier pass wrote for it is stale: the report writers
-        # read the cache directory, not our return value.
+        # Transport/provider errors leave no behaviour to score, so the sample
+        # is dropped (as in reports/_cue_landing.py) rather than counted as
+        # silence. Its cache entry is removed because the report writers read
+        # the cache directory.
         stale = cache_path(action, model, sample_id)
         stale.unlink(missing_ok=True)
         return None
     meta = dict(inst)
-    # data metadata may have extra fields
+    # The data folder's metadata.json may have extra fields.
     if action in DR_ACTIONS:
         data_dir = DATA / action / l3_raw / sample_id
     else:
@@ -1050,9 +1030,8 @@ def main():
     print(md)
     print(f"errors={n_err}  cache={CACHE}", flush=True)
     if n_skipped:
-        # Loud on purpose: a skipped sample shrinks the cache below dataset N,
-        # which makes reports/ withhold the whole cell. Re-run the inference
-        # for these rather than leaving them out.
+        # Skipped samples leave the cache below dataset N, so reports/ withholds
+        # the whole cell until inference for them succeeds.
         print(f"SKIPPED {n_skipped} sample(s) carrying inference errors -- "
               f"cell will render as '--' until they are re-run", flush=True)
 

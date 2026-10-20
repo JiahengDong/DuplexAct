@@ -15,7 +15,7 @@ Neither stage sees the L3 condition, the gold human `bc_text`, or
 `bc_type_original`.
 
 Three rates come out, all over the same dataset N so they stack:
-  automatic  -- the ≤3-word rule alone, i.e. the current published number
+  automatic  -- the ≤3-word rule alone
   screened   -- automatic AND stage 1 confirmed it is a backchannel
   function   -- screened AND stage 2 gave the condition's function
 
@@ -285,7 +285,7 @@ def main() -> None:
     ap.add_argument(
         "--models",
         help="Comma-separated slugs to judge. Default is every model. Stage 2 "
-        "needs output.wav, so a model whose audio only exists on the pod has "
+        "needs output.wav, so a model whose audio lives on another machine has "
         "to be judged there and merged back with --merge.",
     )
     ap.add_argument("--out", type=Path, default=OUT_JSON)
@@ -384,10 +384,9 @@ def main() -> None:
                             {"type": "text", "text": c["prompt_function"]},
                             {"type": "input_audio",
                              "input_audio": {"data": b64, "format": "wav"}}]}]
-                # gpt-audio takes no response_format, so the binary is only as
-                # firm as the prompt. It sometimes stalls ("let me listen...")
-                # instead of answering, and at temperature 0 a blind retry just
-                # reproduces that, so push the stall back as context and re-ask.
+                # gpt-audio takes no response_format and sometimes stalls
+                # ("let me listen...") instead of answering; at temperature 0
+                # a plain retry repeats that, so feed the stall back and re-ask.
                 for attempt in range(3):
                     try:
                         r = client.chat.completions.create(

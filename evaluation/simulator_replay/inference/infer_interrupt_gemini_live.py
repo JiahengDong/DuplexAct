@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_gemini_live.py
-
-Gemini Live interrupt_user client. Separate from infer_stop_gemini_live.py.
-Same live.connect session + output_audio_transcription; InterruptMonitorController.
+Gemini Live client for the interrupt_user action. Uses the same live.connect
+session with output_audio_transcription as infer_stop_gemini_live.py, driven by
+InterruptMonitorController.
 """
 from __future__ import annotations
 
@@ -103,10 +102,8 @@ class InterruptGeminiLiveClient(RealtimeClientBase):
                         if getattr(sc, "interrupted", False):
                             recorder.interrupt(reason="gemini_interrupted",
                                                 response_id=f"turn-{turn_no}")
-                            # Text belonging to the audio just discarded was
-                            # never heard, so it must not stay in front of the
-                            # next turn's text -- see
-                            # InterruptMonitorController.on_interrupt.
+                            # Text for the discarded audio was never heard, so
+                            # drop it (see InterruptMonitorController.on_interrupt).
                             ctrl = controller_holder["controller"]
                             if ctrl is not None:
                                 ctrl.on_interrupt()

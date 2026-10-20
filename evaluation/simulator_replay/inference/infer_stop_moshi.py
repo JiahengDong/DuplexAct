@@ -1,26 +1,16 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_stop_moshi.py
-=======================================================
-Moshi client for the `stop` Level-2 action, simulator-driven (live
-LLM-triggered injection -- see trigger_controller.py's module docstring for
-the full architecture rationale).
+Moshi client for the `stop` action, with the cue injected live by an LLM
+trigger (see trigger_controller.py).
 
-Reuses common/realtime_common.py's RealtimeClientBase /
-SynchronizedRecorder / EventLogger and local_common.py's LocalServerManager
-exactly as infer_moshi.py does (same Moshi server, same wire protocol:
-kind==1 opus audio, kind==2 non-padding text token). The ONLY difference
-from infer_moshi.py's `_connect_and_stream` is the sender loop: instead of
-streaming one fixed pre-built `input_pcm` array end-to-end, it streams
-`lead_in.wav` through a DynamicPCMSource, then a concurrent
-LiveTriggerController decides when to append `cue.wav`'s bytes, then the
-sender keeps going through a fixed post-cue observation window before
-ending. This file is deliberately a SEPARATE module from infer_moshi.py
-(not a subclass override) so the already-validated direct_replay pipeline
-(currently running production jobs) is never touched.
+Uses the same Moshi server and wire protocol as infer_moshi.py (kind==1 opus
+audio, kind==2 non-padding text token). Instead of streaming a fixed input,
+the sender streams `lead_in.wav` through a DynamicPCMSource, a concurrent
+LiveTriggerController decides when to append `cue.wav`, and streaming then
+continues for a fixed post-cue observation window.
 
-Standalone usage (single sample, for the initial smoke test):
-    python infer_stop_moshi.py --sample_dir <path to Candor_stop_0038 etc> \\
+Standalone usage (single sample):
+    python infer_stop_moshi.py --sample_dir <stop sample dir> \\
         --output_wav out.wav --events_path events.jsonl
 """
 from __future__ import annotations
@@ -63,28 +53,17 @@ MOSHI_PORT = int(os.environ.get("MOSHI_PORT", "8998"))
 DEFAULT_MODEL = "kyutai/moshiko-pytorch-bf16"
 
 API_SR        = 24_000
-FRAME_SAMPLES = 1_920          # 80ms @ 24kHz -- Mimi's native frame size, matches infer_moshi.py
+FRAME_SAMPLES = 1_920          # 80ms @ 24kHz, Mimi's native frame size
 FRAME_SEC     = FRAME_SAMPLES / API_SR
 FRAME_BYTES   = FRAME_SAMPLES * 2   # int16
 
-MOSHI_POLL_INTERVAL_S = poll_interval_for_native_chunk(FRAME_SEC)  # 1.0s (unified user-side poll)
+MOSHI_POLL_INTERVAL_S = poll_interval_for_native_chunk(FRAME_SEC)
 
-MOSHI_SILENCE_GRACE_S = 0.8    # same calibration as infer_moshi.py
+MOSHI_SILENCE_GRACE_S = 0.8    # same as infer_moshi.py
 
-# Matches direct_replay's own PADDING_TIME_S=15.0 convention (15 s of
-# silence appended to every input.wav for the model to respond into), so the
-# model gets the SAME amount of room to produce its post-interruption
-# "recovery" turn (analogous to reference_recovery_text / T4) here as every
-# other L2 action gets after its own trigger point. Previously 6.0s, which
-# was only sized to bound YIELD_W_HI=2.0s in actions/stop.py's widest window
-# with margin -- correct for scoring L_yield alone, but too short to ever
-# hear the model's actual recovery (confirmed by user: "why is this only
-# 15 seconds for all?" -- because THIS constant, not model behavior, was
-# setting the total length).
+# Observation window after the cue, matching the 15s of silence Direct Replay
+# appends to every input.wav, so the model has room for its recovery turn.
 POST_CUE_OBSERVATION_S = 15.0
-
-# Poll interval is the unified 1.0s simulated-user cadence
-# (trigger_controller.POLL_INTERVAL_S), not 10x Moshi's 80ms Mimi frame.
 
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 
@@ -107,14 +86,13 @@ class MoshiStopClient(RealtimeClientBase):
         self.trigger_result: dict = {}             # populated by _connect_and_stream
         self.text_tokens: list[tuple[float, str]] = []   # (t, word/punct) as received
         self.model_speech_transcripts: list[str] = []     # aligned to inference["model_speech_segments"]
-        self.simulator_speech_segments: list[dict] = []   # what WE played and when
+        self.simulator_speech_segments: list[dict] = []   # what the simulator played and when
 
     async def _connect_and_stream(self, input_pcm: np.ndarray, input_duration: float,
                                    recorder: SynchronizedRecorder, event_logger: EventLogger,
                                    start_streaming) -> None:
-        # `input_pcm`/`input_duration` here are lead_in.wav's, per run_sample()'s
-        # contract -- the caller (this file's _main_async / a future batch
-        # driver) passes lead_in.wav as `input_wav`.
+        # `input_pcm`/`input_duration` are lead_in.wav's; callers pass
+        # lead_in.wav as run_sample()'s `input_wav`.
         await LocalServerManager.ensure(
             key=f"moshi:{self.model_name}",
             cmd=[
@@ -184,8 +162,8 @@ class MoshiStopClient(RealtimeClientBase):
 
             recv_task = asyncio.create_task(receive_loop())
 
-            # Manual segmentation from t=0, same rationale as infer_moshi.py
-            # (avoid a spurious false-positive segment during priming audio).
+            # Manual segmentation from t=0, as in infer_moshi.py, to avoid a
+            # spurious segment during priming audio.
             recorder.set_speaking(False, at_s=0.0)
 
             await start_streaming()
@@ -205,20 +183,15 @@ class MoshiStopClient(RealtimeClientBase):
                 client=self.llm_client,
                 lead_in_duration_s=input_duration,
                 event_logger=event_logger,
-                poll_interval_s=MOSHI_POLL_INTERVAL_S,  # 1.0s unified user-side poll
-                                                          # closed-source default --
-                                                          # see MOSHI_POLL_INTERVAL_S
+                poll_interval_s=MOSHI_POLL_INTERVAL_S,
             )
             controller_holder["controller"] = controller
             trigger_task = asyncio.create_task(controller.run())
 
             def _on_trigger_done(t: asyncio.Task) -> None:
-                # One-shot for `stop`: once the controller has decided (or
-                # force-triggered), mark the source finished so the sender
-                # loop below knows no MORE real content is coming after the
-                # cue -- pull() still returns silence forever afterward,
-                # is_done just becomes the signal to start counting down
-                # POST_CUE_OBSERVATION_S.
+                # One-shot for `stop`: once the controller has triggered, no
+                # more content follows the cue. pull() keeps returning
+                # silence; is_done starts the POST_CUE_OBSERVATION_S countdown.
                 source.finish()
 
             trigger_task.add_done_callback(_on_trigger_done)
@@ -253,13 +226,10 @@ class MoshiStopClient(RealtimeClientBase):
                     except Exception as e:
                         self.trigger_result = {"error": f"{type(e).__name__}: {e}"}
 
-                # Simulator-side timeline, mirroring what model_speech_segments
-                # captures for the model side -- so a reviewer can reconstruct
-                # the WHOLE conversation (who said what, when) from
-                # inference_info.json alone, not just from listening to
-                # output.wav. Computed here (not earlier) because the cue
-                # segment's start depends on trigger_result, which is only
-                # final once trigger_task has resolved (just above).
+                # Simulator-side timeline, the counterpart of
+                # model_speech_segments, so the full conversation can be
+                # reconstructed from inference_info.json. Built here because
+                # the cue's start depends on the resolved trigger_result.
                 self.simulator_speech_segments = [
                     {
                         "start": 0.0,
@@ -288,13 +258,9 @@ class MoshiStopClient(RealtimeClientBase):
                     recorder.set_speaking(False, at_s=now_fn())
 
 
-# build_conversation_wav / build_conversation_script / the whole standalone
-# single-sample CLI now live in stop_common.py (run_stop_sample_cli /
-# stop_cli_main, imported above) -- extracted there once a second model
-# client needed the exact same logic. See that module's docstring. Moshi's
-# own text-capture granularity (word-level `self.text_tokens`) matches
-# stop_common's `default_model_speech_transcripts()` default exactly, so no
-# `compute_model_speech_transcripts()` override is needed here.
+# The standalone CLI lives in stop_common.py. Moshi's word-level
+# `self.text_tokens` work with `default_model_speech_transcripts()`, so no
+# `compute_model_speech_transcripts()` override is needed.
 
 def main():
     stop_cli_main(MoshiStopClient, MOSHI_SLUG, API_SR, DEFAULT_MODEL)

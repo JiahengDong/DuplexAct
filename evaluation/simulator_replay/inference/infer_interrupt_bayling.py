@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_bayling.py
-
-BayLing-Duplex interrupt_user client. Separate from infer_stop_bayling.py.
-Same DynamicTokenSource + stream_audio_tokens(state=) driving; both branch
-clips are tokenized up front and passed to InterruptMonitorController as
-token lists (duck-typed append/truncate_pending). max_epad_count=3 so a
-greeting + take-turn + post-branch reply can all land.
+BayLing-Duplex client for the `interrupt_user` action. Driven like
+infer_stop_bayling.py (DynamicTokenSource + stream_audio_tokens(state=)).
+Both branch clips are tokenized up front and handed to
+InterruptMonitorController as token lists, which the source appends like PCM.
+max_epad_count=3 leaves room for a greeting, the take-turn, and a reply after
+the branch.
 """
 from __future__ import annotations
 

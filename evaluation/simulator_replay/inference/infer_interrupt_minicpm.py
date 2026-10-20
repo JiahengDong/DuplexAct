@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/infer_interrupt_minicpm.py
+MiniCPM-o 4.5 interrupt_user client.
 
-MiniCPM-o 4.5 interrupt_user client. Separate from infer_stop_minicpm.py.
-Same as_duplex streaming_prefill/streaming_generate loop; InterruptMonitorController.
-Poll interval remains 10.0s (native 1.0s chunk × tau2 10-tick ratio).
+Same as_duplex streaming_prefill/streaming_generate loop as
+infer_stop_minicpm.py, driven by InterruptMonitorController. The monitor polls
+every MINICPM_POLL_INTERVAL_S (10 native 1.0 s chunks).
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from interrupt_controller import InterruptMonitorController  # noqa: E402
 from interrupt_user_common import (  # noqa: E402
     interrupt_cli_main, POST_BRANCH_OBSERVATION_S, build_interrupt_simulator_speech_segments,
 )
-from infer_stop_minicpm import (  # noqa: E402  -- read-only constants/helpers
+from infer_stop_minicpm import (  # noqa: E402
     MINICPM_SLUG, DEFAULT_MODEL, INPUT_SR, OUTPUT_SR, CHUNK_SEC, CHUNK_BYTES,
     MAX_NEW_SPEAK_TOKENS_PER_CHUNK, MINICPM_POLL_INTERVAL_S, DEFAULT_PREFIX_PROMPT,
     _ensure_ref_audio, _pcm_f32_to_i16_bytes,

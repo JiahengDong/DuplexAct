@@ -1,52 +1,19 @@
 #!/usr/bin/env python3
 """
-evaluation/simulator_replay/inference/realtime_api_stop_common.py
-
-Shared base class for `stop`-action simulator clients against closed-source
-"GA Realtime schema" WebSocket APIs -- currently OpenAI GPT-Realtime and
-xAI Grok Voice, whose direct_replay clients (infer_gpt_realtime.py,
-infer_grok_voice.py) are already near-verbatim twins of each other (same
-message shapes: session.update / response.created / input_audio_buffer.
-speech_started / response.done / response.output_audio.delta /
-response.audio.delta / error -- see infer_grok_voice.py's own module
-docstring: "Protocol ... is essentially the same GA schema as OpenAI's
-Realtime API"). Extracting the shared parts here (rather than duplicating
-this whole file twice, the way infer_stop_moshi.py / infer_stop_flm_audio.py
-are still two full separate files, since THOSE differ enough in their
-sphn/opus plumbing to not be worth a shared base) keeps the two per-model
-files (infer_stop_gpt_realtime.py, infer_stop_grok_voice.py) down to just
-their provider-specific session.update shape plus a few constants.
+Shared base class for simulator-replay clients against WebSocket APIs that use
+the OpenAI GA Realtime schema (OpenAI GPT-Realtime, xAI Grok Voice): session.update,
+response.created, input_audio_buffer.speech_started, response.done,
+response.output_audio.delta / response.audio.delta, error.
 
 Each subclass must set:
-  - MODEL_SLUG, OUTPUT_SR / INPUT_SR (as normal for RealtimeClientBase)
-  - WS_URL (class attr, no `?model=` query string -- appended in
-    _connect_and_stream from self.model_name, matching both original
-    clients' own construction)
-  - CHUNK_MS / API_SR (both providers currently use 20ms @ 24kHz, kept as
-    class attrs rather than hardcoded here in case a future provider on
-    this same schema differs)
-  - build_session_update(self) -> dict -- the one genuinely
-    provider-specific piece (GPT nests turn_detection/voice differently
-    from Grok -- see each client's own module for the exact shape)
+  - MODEL_SLUG, OUTPUT_SR / INPUT_SR (as for RealtimeClientBase)
+  - WS_URL, without the `?model=` query string (appended from self.model_name)
+  - CHUNK_MS / API_SR (20 ms at 24 kHz by default)
+  - build_session_update(self) -> dict, the provider-specific session config
 
-Poll interval: every simulator client (open- and closed-source) uses
-trigger_controller.POLL_INTERVAL_S (1.0s) as the simulated-user check
-cadence. LiveTriggerController is constructed below without a
-poll_interval_s override for exactly this reason.
-
-Live text signal: both original direct_replay clients currently drop
-transcript deltas outright (an explicit "ignore other delta streams"
-branch) -- this is the MINOR ADJUST flagged in MODEL_COMPATIBILITY.md.
-This file stops ignoring them: any event type in TRANSCRIPT_DELTA_TYPES is
-decoded and fed to the trigger controller via ctrl.on_text(), mirroring how
-moshi/flm-audio's text tokens are handled. Both known alias names are
-accepted, the same two-alias pattern already used for audio deltas in both
-original clients.
-
-This file is deliberately separate from infer_gpt_realtime.py and
-infer_grok_voice.py (never imported by them, never touched by them) -- see
-trigger_controller.py's own module docstring for the "always a separate
-module, never a subclass override of the direct_replay client" rule.
+The simulated user is polled every trigger_controller.POLL_INTERVAL_S, the same
+cadence as every other simulator client. Transcript deltas (any type in
+TRANSCRIPT_DELTA_TYPES) are fed to the trigger controller via ctrl.on_text().
 """
 from __future__ import annotations
 
@@ -89,41 +56,23 @@ class ProviderError(RuntimeError):
     pass
 
 
-# One playback policy for every action: on barge-in, drop the queued-but-unheard
-# backlog. These APIs emit audio 4.0-5.5x faster than realtime, so by the time
-# the cue reaches the model's ear there is 3.1-7.0s of audio it generated before
-# it could know about the cue -- audio that in a 1x system would not exist yet.
-# Dropping it makes the playback clock catch up to the generation clock, which
-# is the whole point: from that instant on, whether the listener hears speech is
-# the model's own post-cue decision (its continued deltas arrive within ~0.1s at
-# these generation speeds) rather than buffer drainage. That is what lets stop,
-# hold_floor and respond_and_recover all be read off the ongoing speech.
-#
-# What must NOT come with the flush is the R-03 response-id blacklist -- see the
-# speech_started handler.
-#
-# Still open, and deferred to the same round as interrupt_user and the scoring
-# fields: a model that finished generating its whole turn before the cue reached
-# its ear (GPT 46%, Grok 70%, Qwen 100% of hold_floor samples) never had the
-# stop-or-continue decision available to it, so those samples should be gated
-# out as not-applicable rather than scored as failures. That is an eligibility
-# question on the scoring side, not a playback-policy one.
+# Playback policy for every action: on barge-in, drop the queued-but-unheard
+# backlog. These APIs emit audio several times faster than realtime, so when the
+# cue arrives there are seconds of audio generated before the model could know
+# about it. Dropping it makes playback catch up to generation, so from then on
+# whether the listener hears speech reflects the model's own post-cue decision
+# rather than buffer drainage. The flush does not blacklist the response id;
+# see the speech_started handler.
 
 
 class RealtimeAPIStopClientBase(RealtimeClientBase):
     WS_URL = ""
     CHUNK_MS = 20
     API_SR = 24000
-    # Does this provider accept `conversation.item.truncate`, i.e. can we tell
-    # its server how much of an assistant item the listener actually heard?
-    # Only OpenAI does. xAI documents cancellation but not output truncation
-    # (pydantic-ai reports supports_output_truncation=False for it, and
-    # livekit/agents#6391 shows sending it there desyncs the server-side item
-    # list and then drops every later item); DashScope's Qwen-Omni client
-    # event list has no truncate event at all. Gemini needs none -- its server
-    # does barge-in itself and truncates its own context. tau2-bench makes the
-    # same split: server-side truncate for OpenAI only, client-side discard
-    # for all four.
+    # Whether the provider accepts `conversation.item.truncate` to report how
+    # much of an assistant item the listener heard. Only OpenAI does: on xAI it
+    # desyncs the server-side item list (livekit/agents#6391), and DashScope's
+    # Qwen-Omni has no truncate event.
     SUPPORTS_ITEM_TRUNCATE = False
 
     def __init__(self, api_key, model_name, system_prompt, verbose,
@@ -157,36 +106,20 @@ class RealtimeAPIStopClientBase(RealtimeClientBase):
         response_active = False
         expecting_cancel = False
         current_response_id = None
-        # Barge-in bookkeeping. `current_item_id` is the assistant item whose
-        # audio is currently being played out, and `item_play_start_s` is where
-        # on the recorder's played-speech axis that item's playback begins --
-        # snapshotted as (already played) + (still queued) when the item's
-        # first delta lands, because its predecessor may still be draining.
+        # Barge-in bookkeeping. `current_item_id` is the assistant item being
+        # played out; `item_play_start_s` is where its playback begins on the
+        # recorder's played-speech axis, taken as (played) + (queued) when its
+        # first delta lands, since its predecessor may still be draining.
         # audio_end_ms for conversation.item.truncate is the difference.
         current_item_id = None
         item_play_start_s = 0.0
         got_transcript_delta = False
         provider_errors = []
-        # Dedupes a confirmed provider quirk found at full-scale (0/1905
-        # direct_replay samples ever hit it -- that pipeline never sends
-        # interrupting audio mid-response, so this path was simply never
-        # exercised there; 8/200 stop-simulator gpt-realtime-2.1 samples did):
-        # OpenAI's server can emit a SECOND, stale `response.done` for a
-        # response_id that had ALREADY received its real terminal event.
-        # Confirmed pattern on every occurrence (Candor_stop_0028/0060,
-        # AMI_stop_0139, Candor_stop_0026, ...): response.done(completed) for
-        # response_id X, then ~150-250ms later -- after our injected cue audio
-        # reached the server and its own VAD flagged turn_detected on it --
-        # a DUPLICATE response.done(cancelled, reason=turn_detected) for that
-        # SAME already-finished response_id X. Our own `expecting_cancel` flag
-        # can't be True for it (no `speech_started` had arrived yet when the
-        # first "completed" landed, so response_active was already False by
-        # the time speech_started did fire), so this second event previously
-        # misclassified as unexpected_cancelled and failed 8/200 otherwise-
-        # clean samples. The first terminal status a response_id receives is
-        # authoritative (audio for it is already fully recorded); any later
-        # response.done for the SAME response_id is provider-side redundancy,
-        # not a new failure, so it's logged but not re-classified/re-errored.
+        # OpenAI can emit a second, stale `response.done` for a response_id that
+        # already got its terminal event: response.done(completed), then a
+        # duplicate response.done(cancelled, reason=turn_detected) once the cue
+        # trips the server VAD. The first terminal status per response_id is
+        # authoritative; later ones are logged but not classified as errors.
         finalized_response_ids: set = set()
         controller_holder = {"controller": None}
         stream_t0 = {"t": None}
@@ -249,30 +182,16 @@ class RealtimeAPIStopClientBase(RealtimeClientBase):
                         event_logger.log("recv", etype, {"response_id": current_response_id})
 
                     elif etype == "input_audio_buffer.speech_started":
-                        # The provider's OWN server-side VAD has just told us
-                        # the user is speaking. Stopping playback of audio the
-                        # listener has not heard yet is the playback layer's
-                        # job in any real deployment -- it is NOT us deciding
-                        # the model yields the floor (that would be
-                        # `response.cancel`, which we still never send).
+                        # The provider's server-side VAD reports user speech.
+                        # Stopping playback of unheard audio is the playback
+                        # layer's job; it does not make the model yield the
+                        # floor (that would be `response.cancel`, never sent).
                         #
-                        # This used to be gated on `response_active`, i.e. on
-                        # the response still being mid-generation. But these
-                        # APIs emit audio 4-5.5x faster than realtime, so
-                        # `response.done` usually lands BEFORE the cue does and
-                        # the gate was already False: measured over
-                        # respond_and_recover, 353/1092 GPT samples where the
-                        # cue arrived while the model was audibly speaking took
-                        # the else-branch, and Grok took it 724/724 times (its
-                        # server never reports `cancelled`). Those samples then
-                        # played the whole queued backlog through the cue, so
-                        # the pre-cue turn and the recovery reply merged into
-                        # one continuous segment with no onset in the scoring
-                        # window: Recover Immediate was 15.9% for the un-flushed
-                        # GPT group vs 78.9% for the flushed one. Whether the
-                        # server happens to still be generating is a function
-                        # of its generation speed, not of the model's duplex
-                        # behaviour, so it must not gate this.
+                        # Not gated on `response_active`: these APIs generate
+                        # faster than realtime, so `response.done` often lands
+                        # before the cue while audio is still playing. Whether
+                        # the server is still generating reflects its speed,
+                        # not its duplex behaviour.
                         played_in_item_ms = int(1000 * max(
                             0.0, recorder.played_speech_s() - item_play_start_s
                         ))
@@ -285,22 +204,11 @@ class RealtimeAPIStopClientBase(RealtimeClientBase):
                         is_barge_in = (recorder.queued_unplayed_s() > 0.0
                                        or recorder.current_speaking_duration() > 0.0)
                         if is_barge_in:
-                            # response_id is deliberately NOT passed. Dropping
-                            # the queued backlog is what lets playback catch up
-                            # to generation, so that from here on "is the model
-                            # still speaking" reads the model's own post-cue
-                            # decision instead of buffer drainage. Blacklisting
-                            # the response id (R-03) would defeat exactly that:
-                            # it also discards the response's CONTINUED deltas,
-                            # which is how these providers express "I am keeping
-                            # the floor" -- measured on hold_floor, 72-93% of
-                            # post-cue audio is more deltas of the same
-                            # response and 0% is a new one. The blacklist
-                            # belongs on the provider's own cancellation (see
-                            # response.done below), which is what R-03 was
-                            # written for; predicting it from user speech onset
-                            # is only correct for providers that always cancel,
-                            # and Grok never reports cancelled at all.
+                            # response_id is not passed: blacklisting it would
+                            # also discard the response's continued deltas,
+                            # which is how these providers keep the floor.
+                            # The blacklist is applied only on the provider's
+                            # own cancellation (see response.done below).
                             recorder.interrupt(reason="input_speech_during_response")
                             ctrl = controller_holder["controller"]
                             if ctrl is not None:
@@ -354,11 +262,8 @@ class RealtimeAPIStopClientBase(RealtimeClientBase):
                         response_active = False
 
                         if resp_id is not None and resp_id in finalized_response_ids:
-                            # Stale duplicate terminal event for a response_id
-                            # that already got its real terminal status --
-                            # see finalized_response_ids' own comment above
-                            # for the confirmed root cause. Logged for
-                            # visibility, never re-classified/re-errored.
+                            # Stale duplicate terminal event; see
+                            # finalized_response_ids above.
                             expecting_cancel = False
                             event_logger.log("recv", etype, {
                                 "status": status, "status_label": "duplicate_terminal_ignored",
@@ -376,11 +281,8 @@ class RealtimeAPIStopClientBase(RealtimeClientBase):
                                 status, expected_cancel=expected)
                             expecting_cancel = False
                             if status == "cancelled" and resp_id is not None:
-                                # R-03, now anchored on the provider's own
-                                # signal rather than predicted from user speech
-                                # onset: this response really is dead, so a
-                                # delta still in flight for it must not resume
-                                # playback of audio the cancellation suppressed.
+                                # The response is cancelled, so a delta still in
+                                # flight for it must not resume playback.
                                 recorder.interrupt(reason="provider_cancelled",
                                                    response_id=resp_id)
                             event_logger.log("recv", etype, {

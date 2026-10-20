@@ -3,35 +3,32 @@
 Every Level-2 action is scored as two halves:
 
 - Immediate: did the model do the right thing in the annotated timing
-  interval? The *interval* is condition-specific and is left unspecified
-  until we go through each action.
+  interval? The interval is condition-specific.
 - Subsequent: did later behaviour correctly use / respect what happened
-  during or after that Immediate window? The Subsequent checks are the
-  same for every condition of an action unless a later pass adds a tweak.
+  during or after that Immediate window? The Subsequent checks are shared
+  by every condition of an action.
 
-Scores are 0/1 per check. Immediate windows are not inherited from the
-old B/T/R scorers.
+Scores are 0/1 per check.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Paper evaluation judges. GPT-5.4 does all the text judging: every
-# action's Subsequent (and old R_i), and stage 1 of backchannel Immediate.
-# Backchannel stage 2 is the only audio-in judge. Simulator cue/branch
-# decisions also use GPT-5.4, but that is apparatus, not this scorer.
+# Evaluation judges. GPT-5.4 does all the text judging: every action's
+# Subsequent, and stage 1 of backchannel Immediate. Backchannel stage 2 is the
+# only audio-in judge. The simulator's cue/branch decisions also use GPT-5.4,
+# but that is part of the simulator, not this scorer.
 TEXT_JUDGE_MODEL = "gpt-5.4"
-# Not read by the scorer, and not the pin. Both backchannel judges are
-# pinned in bc_two_stage_judge.py, where stage 1 is TEXT_MODEL
-# ("gpt-5.4-2026-03-05", a dated snapshot of TEXT_JUDGE_MODEL above) and
-# stage 2 is AUDIO_MODEL. This name survives only as a re-export.
+# Not read by the scorer. The backchannel judges are pinned in
+# bc_two_stage_judge.py (stage 1 TEXT_MODEL, a dated snapshot of
+# TEXT_JUDGE_MODEL; stage 2 AUDIO_MODEL); this name is only re-exported.
 AUDIO_JUDGE_MODEL = "gpt-audio"
 
 
 @dataclass(frozen=True)
 class ImmediateInterval:
-    """Decision interval for Immediate scoring, filled per condition later.
+    """Decision interval for Immediate scoring, set per condition.
 
     Use one of:
     - named span: ``start_key`` / ``end_key`` (metadata or timestamp fields)
